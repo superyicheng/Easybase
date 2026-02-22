@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Context Tree — BM25-based context management for AI knowledge bases."""
+"""Easybase — BM25-based context management for AI knowledge bases."""
 
 import json
 import math
@@ -232,7 +232,7 @@ def generate_manifest(chunks, base_dir="."):
     domains = set(c["domain"] for c in chunks.values() if c["domain"])
 
     lines = [
-        "# Context Tree Manifest",
+        "# Easybase Manifest",
         "",
         "## Project State",
         f"Knowledge base with {len(chunks)} chunks across {len(domains)} domains.",
@@ -550,7 +550,7 @@ def cmd_stats(base_dir="."):
         idf = math.log((N - df + 0.5) / (df + 0.5) + 1)
         return max(idf, IDF_FLOOR)
 
-    print("=== Context Tree Index Stats ===")
+    print("=== Easybase Index Stats ===")
     print(f"Chunks (N):          {N}")
     print(f"Unique terms:        {unique_terms}")
     print(f"Avg doc length:      {avgdl:.1f} tokens")
@@ -571,7 +571,7 @@ def cmd_stats(base_dir="."):
 
 def main():
     if len(sys.argv) < 2:
-        print("Context Tree — BM25-based context management")
+        print("Easybase — BM25-based context management")
         print()
         print("Commands:")
         print("  index                          Build index + manifest from chunks/")

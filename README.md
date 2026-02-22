@@ -1,10 +1,30 @@
-# Context Tree
+# Easybase
 
 A BM25-based context management system that helps AI work with large knowledge bases across sessions. Store knowledge as small chunks, maintain a structural manifest, and retrieve only what's relevant.
 
-## The Problem
+---
 
-AI performs poorly with too much context, but needs accumulated knowledge to give good answers. Context Tree solves this by keeping knowledge in small, searchable chunks (~200 tokens each) and retrieving only the relevant ones per query. Total context stays small regardless of how much knowledge has accumulated.
+### What It Does
+
+AI performs poorly with too much context, but needs accumulated knowledge to give good answers. Easybase solves both: knowledge persists as chunk files across sessions, and only the relevant chunks are retrieved per query. **Total context stays ~1500 tokens regardless of how large the knowledge base grows.**
+
+### Strengths
+
+- **Zero dependencies** — Single Python file, standard library only. Drop it into any project.
+- **Scales without slowing down** — Search time is proportional to matches, not corpus size. 10 chunks and 10,000 chunks search equally fast for specific terms.
+- **Modified BM25 for knowledge bases** — IDF floor prevents common domain terms from being ignored. Reference weighting automatically boosts foundational chunks.
+- **AI-native design** — Manifest gives the AI structural understanding; chunks give it detail. The AI bridges vocabulary gaps that pure keyword search can't.
+- **Works with any domain** — Software architecture, research, configs, debugging notes, onboarding — anything that benefits from structured retrieval.
+- **Human-readable storage** — All chunks are plain Markdown files. No database, no binary formats. Version control friendly.
+
+### Limitations
+
+- **Keyword-based, not semantic** — BM25 matches exact terms. It won't connect "authentication" to "login" unless both words appear. The AI compensates by choosing good search terms, but the retrieval itself is lexical.
+- **No automatic chunking** — You write and maintain chunks manually. Good summaries and tags are critical for search quality.
+- **Flat structure** — No subdirectories, no hierarchical organization. Everything relies on the `depends` field and the manifest for structure.
+- **English-optimized tokenizer** — Stopword list and tokenization rules are designed for English text.
+
+---
 
 ## How It Works
 
@@ -16,8 +36,9 @@ AI performs poorly with too much context, but needs accumulated knowledge to giv
    → Uses reasoning to bridge vocabulary gaps
 
 3. AI calls BM25 search
-   → O(1) hash lookups into the inverted index
-   → Returns ranked chunks
+   → Looks up query terms in the inverted index
+   → Only scores chunks that contain those terms
+   → Search time scales with matches, not corpus size
 
 4. AI reads returned chunks (~200 tokens each, 3-5 chunks)
    → Total context: ~1500 tokens regardless of corpus size
@@ -171,20 +192,34 @@ Bad:  "Notes about the API"
 
 Aim for ~200 tokens per chunk. Small enough for focused retrieval, large enough to be self-contained. If a topic needs more, split into linked chunks with `depends` and `→ see` references.
 
-## BM25 Modifications
+## Modified BM25
 
-Standard BM25 (k1=1.5, b=0.75) with two modifications:
+Standard BM25 (k1=1.5, b=0.75) with two modifications designed for chunk-based knowledge retrieval.
 
-**Reference Weight** — Chunks that many others depend on are foundational and get a score boost:
+### Scaling Behavior
+
+Search uses a precomputed inverted index: a dictionary mapping each term to the list of chunks that contain it. When a query comes in, the engine looks up each query term and only scores the chunks in those posting lists — it never scans the full corpus. As your knowledge base grows from 10 to 10,000 chunks, search time stays nearly constant for specific queries, because rare terms still appear in only a few chunks. The work is proportional to how many chunks match, not how many exist.
+
+### IDF Floor for Common Keywords
+
+In standard BM25, terms that appear in most documents get an IDF near zero — they contribute almost nothing to the score. This is a problem for knowledge bases where common domain terms (e.g., "API", "model", "config") still carry useful signal. The IDF floor ensures every matching term contributes at least a small amount:
+
+```
+IDF(t) = max(standard_idf(t), 0.1)
+```
+
+Without the floor, a chunk matching "API" + "rate-limiting" scores the same as one matching only "rate-limiting", because IDF("API") ≈ 0. With the floor, "API" adds 0.1 as a tiebreaker — when two chunks match rare terms equally, the one also matching common terms wins.
+
+### Reference Weight for Foundational Chunks
+
+Chunks that many others depend on are foundational knowledge. They get a score boost so they surface more readily:
+
 ```
 final_score = W(d) × BM25(d, q)
 W(d) = 1 + log(1 + refs(d))
 ```
 
-**IDF Floor** — Common terms contribute a minimum 0.1 signal instead of zero, acting as a tiebreaker:
-```
-IDF(t) = max(standard_idf(t), 0.1)
-```
+A chunk with 3 dependents gets a ~2.4x boost. A leaf chunk with no dependents gets no change (1.0x).
 
 ## Manifest
 
