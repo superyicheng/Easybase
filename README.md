@@ -6,10 +6,13 @@ A BM25-based context management system that helps AI work with large knowledge b
 
 ### What It Does
 
-AI performs poorly with too much context, but needs accumulated knowledge to give good answers. Easybase solves both: knowledge persists as chunk files across sessions, and only the relevant chunks are retrieved per query. **Total context stays ~1500 tokens regardless of how large the knowledge base grows.**
+AI performs poorly with too much context, but needs accumulated knowledge to give good answers. Easybase solves both: knowledge persists as chunk files across sessions, and **every piece of useful information is extracted and delivered to the AI — everything else is abstracted away.**
+
+The manifest abstracts the entire knowledge base into a compact structural overview. When the AI needs specific detail, Easybase retrieves all the relevant chunks in full. The AI always gets complete useful information, never truncated, never diluted by irrelevant content.
 
 ### Strengths
 
+- **All useful information, nothing else** — Relevant chunks are loaded in full. Everything outside the query's scope is abstracted in the manifest — present as structure, not as noise.
 - **Zero dependencies** — Single Python file, standard library only. Drop it into any project.
 - **Scales without slowing down** — Search time is proportional to matches, not corpus size. 10 chunks and 10,000 chunks search equally fast for specific terms.
 - **Modified BM25 for knowledge bases** — IDF floor prevents common domain terms from being ignored. Reference weighting automatically boosts foundational chunks.
@@ -17,11 +20,11 @@ AI performs poorly with too much context, but needs accumulated knowledge to giv
 - **Works with any domain** — Software architecture, research, configs, debugging notes, onboarding — anything that benefits from structured retrieval.
 - **Human-readable storage** — All chunks are plain Markdown files. No database, no binary formats. Version control friendly.
 
-### Limitations
+### Tradeoffs
 
 - **Keyword-based, not semantic** — BM25 matches exact terms. It won't connect "authentication" to "login" unless both words appear. The AI compensates by choosing good search terms, but the retrieval itself is lexical.
-- **No automatic chunking** — You write and maintain chunks manually. Good summaries and tags are critical for search quality.
-- **Flat structure** — No subdirectories, no hierarchical organization. Everything relies on the `depends` field and the manifest for structure.
+- **Manual chunking** — You write and maintain chunks yourself. This gives you full control over what gets stored and how it's summarized, but requires effort.
+- **Flat storage** — No subdirectories. Structure comes from the `depends` field and the manifest's dependency graph, not from folder hierarchy.
 - **English-optimized tokenizer** — Stopword list and tokenization rules are designed for English text.
 
 ---
@@ -29,8 +32,9 @@ AI performs poorly with too much context, but needs accumulated knowledge to giv
 ## How It Works
 
 ```
-1. AI reads manifest.md (~500 tokens)
+1. AI reads manifest.md
    → Sees all chunks, their summaries, how they connect
+   → Everything in the knowledge base, abstracted into structure
 
 2. AI decides what it needs
    → Uses reasoning to bridge vocabulary gaps
@@ -40,8 +44,9 @@ AI performs poorly with too much context, but needs accumulated knowledge to giv
    → Only scores chunks that contain those terms
    → Search time scales with matches, not corpus size
 
-4. AI reads returned chunks (~200 tokens each, 3-5 chunks)
-   → Total context: ~1500 tokens regardless of corpus size
+4. AI reads all relevant chunks in full
+   → Complete useful information, no truncation
+   → Irrelevant content stays abstracted in the manifest
 ```
 
 The AI is the semantic layer. It reads the manifest, reasons about relevance, and tells BM25 what to retrieve. BM25 handles fast keyword retrieval. Neither does the other's job.
@@ -223,12 +228,12 @@ A chunk with 3 dependents gets a ~2.4x boost. A leaf chunk with no dependents ge
 
 ## Manifest
 
-`manifest.md` is auto-generated and serves as the AI's map of the knowledge base. It lists every chunk with a one-line summary, dependency links, and a dependency graph. Load it at the start of every session (~500 tokens).
+`manifest.md` is auto-generated and serves as the AI's map of the knowledge base. It abstracts the entire knowledge base into a compact overview: every chunk listed with a one-line summary, dependency links, and a dependency graph. Load it at the start of every session — the AI sees everything at a structural level, then retrieves full detail for whatever is relevant.
 
 ## Use Cases
 
 - **Cross-session memory** — Capture findings, decisions, parameters, and corrections as chunks. They persist across sessions.
-- **Large project context** — Keep hundreds of knowledge chunks while only loading the 3-5 relevant ones per query.
+- **Large project context** — Keep hundreds of knowledge chunks while loading only the relevant ones per query.
 - **Any domain** — Software architecture, research notes, configuration references, onboarding docs, debugging history — anything that benefits from structured retrieval.
 
 ## License
