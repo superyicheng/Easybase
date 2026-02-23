@@ -183,33 +183,45 @@ projects, run `ctx.py scan` to re-import changed files.
 3. Create chunks via `add` following the storage rules above
 4. Update tree summaries
 
-## Permissions — checking before asking
+## Permissions — check before asking, offer "allow forever"
 
 Every `ctx.py load` output includes the contents of `permission.md`.
 This file records what the user has permanently allowed or blocked,
 both globally and per project.
 
-Before asking the user for permission to access a directory or run
-a command, you MUST check permission.md:
+### Before performing any action, check permission.md:
 - If the action is listed under **Allowed Directories** or **Allowed Commands**
   (globally or for this project), proceed without asking.
 - If it is listed under **Blocked Directories** or **Blocked Commands**, refuse.
-- If it is not listed, ask the user.
+- If it is not listed, ask the user (see below).
 
-When you ask and the user grants permission, offer two options:
-1. Allow for this session only (do nothing, just proceed)
-2. **Allow forever for this project** — call `ctx.py permit` (or
-   `easybase_permit`) to record it in permission.md:
-   ```
-   ctx.py permit --project "project-name" --type allow_dir --value "/path"
-   ctx.py permit --project "project-name" --type allow_cmd --value "npm test"
-   ctx.py permit --project global --type allow_cmd --value "git"
-   ```
+### When you need to ask for permission:
 
-Permission types: `allow_dir`, `readonly_dir`, `block_dir`, `allow_cmd`, `block_cmd`
+Present the options directly in your message. For example:
 
-This eliminates repetitive permission prompts across sessions. Once the user
-says "always allow", it is recorded and never asked again.
+> I need to access `/Users/me/project/src`. How should I proceed?
+> 1. **Allow once** — I'll proceed this time only
+> 2. **Allow forever for this project** — I'll record this so you're never asked again
+
+If the user picks "allow forever", immediately call `easybase_permit`
+(or `ctx.py permit`) to save it, then proceed:
+```
+easybase_permit(project="project-name", permission_type="allow_dir", value="/Users/me/project/src")
+```
+
+The user should never need to run a command or edit a file. They just
+pick an option from your message, and you handle the rest.
+
+### Permission types
+- `allow_dir` — AI can read and write in this directory
+- `readonly_dir` — AI can read but must not modify
+- `block_dir` — AI must never access
+- `allow_cmd` — AI can run this command
+- `block_cmd` — AI must never run this command
+
+### Scope
+- `project="global"` — applies to all projects and sessions
+- `project="my-webapp"` — applies only when working on that project
 
 ## Your responsibility
 

@@ -2190,8 +2190,6 @@ def main():
         print('  record --content "text"            Record a session')
         print('  respond "AI answer"                Record AI response')
         print("  scan [--paths ...]                 Re-scan for projects")
-        print("  permit --project P --type T        Record permanent permission")
-        print("         --value V")
         print("  stats                              Show index statistics")
         print("  check                              Validate system integrity")
         print()

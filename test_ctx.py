@@ -8,12 +8,9 @@ def mock_init(monkeypatch):
     """
     inputs = iter([
         "1",        # create new soul.md
-        "Test KB",  # knowledge base name
-        "Test description",
-        "1",        # storage mode
-        "",         # default max_top_k
+        "1",        # storage mode: everything
         "1",        # enforcement off
-        "1"         # no scan
+        "1",        # no scan
     ])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
