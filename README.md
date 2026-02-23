@@ -29,59 +29,20 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 
 ## Setup
 
-### Step 1: Clone and initialize
-
 ```bash
 git clone https://github.com/superyicheng/Easybase.git
 cd Easybase
 python3 ctx.py init
 ```
 
-Init walks you through:
+That's it. Init handles everything:
+
 1. **User Profile** — set up soul.md (your preferences, background, context for the AI)
 2. **Storage** — what the AI should store, enforcement mode
 3. **Project Discovery** — **import all your existing projects at once.** You choose which directories Easybase is allowed to scan (e.g. `~/Projects`, `~/work`). Easybase scans those directories for projects containing AI context files (CLAUDE.md, .cursorrules, README.md, etc.) and imports every project it finds as searchable knowledge chunks. You can select which projects to import, or import all of them. You can always import more later with `python3 ctx.py scan`.
+4. **AI Tool Integration** — automatically installs the `mcp` package and registers Easybase as an MCP server (auto-detects Claude Code). The MCP server itself instructs the AI to load Easybase — no config files to edit. For apps that can't be auto-configured (Claude Desktop, Cursor, Windsurf), it prints the exact config to copy. For web AI (ChatGPT, Claude.ai, Gemini), use the browser extension.
 
-### Step 2: Connect Easybase to your AI
-
-Easybase needs to be registered as a tool server so the AI can call it. Pick your app:
-
-**Claude Code:**
-
-```bash
-pip install mcp
-claude mcp add --transport stdio easybase \
-  -e EASYBASE_DIR=/path/to/Easybase \
-  -- python3 /path/to/Easybase/mcp_server.py
-```
-
-**Claude Desktop** — install `mcp` (`pip install mcp`), then add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "easybase": {
-      "command": "python3",
-      "args": ["/path/to/Easybase/mcp_server.py"],
-      "env": { "EASYBASE_DIR": "/path/to/Easybase" }
-    }
-  }
-}
-```
-
-**Cursor / Windsurf** — same command/args/env pattern in MCP settings. Install `mcp` first (`pip install mcp`).
-
-### Step 3: Tell the AI to use Easybase
-
-Add this line to your `CLAUDE.md` (or equivalent config file for your app):
-
-```
-Always call easybase_load at the start of every conversation to load context from the Easybase knowledge base.
-```
-
-This ensures the AI calls Easybase automatically at the start of every session, which loads the full protocol with all instructions.
-
-**That's it.** Easybase is now active. Every new conversation will load your knowledge base automatically.
+After init, start a new session in your AI tool and Easybase loads automatically.
 
 Available MCP tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`, `easybase_permit`
 
@@ -104,9 +65,9 @@ To use a different location, set `EASYBASE_DIR` to point to your data directory.
 
 ---
 
-## Browser Extension — ChatGPT, Claude.ai, Gemini (partial support)
+## Browser Extension — ChatGPT, Claude.ai, Gemini
 
-Adds a floating button to web AI chats. Loads context into the chat input and auto-captures AI responses. However, the AI **cannot call Easybase tools directly** — it can only read the injected context. Tools like `easybase_search`, `easybase_add`, and `easybase_scan` are not available. For full functionality, use the MCP setup above.
+Adds a floating button to web AI chats. Loads context into the chat input and auto-captures AI responses. All Easybase functions are available through the HTTP server — the extension communicates with it to load context, search, and record responses.
 
 **1. Start the local server:**
 

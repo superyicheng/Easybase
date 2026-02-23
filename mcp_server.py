@@ -31,7 +31,11 @@ import ctx
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("easybase")
+mcp = FastMCP("easybase", instructions=(
+    "You MUST call easybase_load at the start of every conversation "
+    "to load context from the Easybase knowledge base. Do this before "
+    "responding to the user's first message."
+))
 
 BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.dirname(os.path.abspath(__file__)))
 

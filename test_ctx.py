@@ -13,6 +13,8 @@ def mock_init(monkeypatch):
         "1",        # no scan
     ])
     monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+    # Prevent Phase 4 from detecting claude CLI or running subprocess
+    monkeypatch.setattr("shutil.which", lambda _: None)
 
 
 def test_init_creates_structure(monkeypatch, tmp_path):

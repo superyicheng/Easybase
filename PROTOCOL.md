@@ -183,34 +183,50 @@ projects, run `ctx.py scan` to re-import changed files.
 3. Create chunks via `add` following the storage rules above
 4. Update tree summaries
 
-## Permissions — check before asking, offer "allow forever"
+## Permissions — YOU must ask BEFORE the tool asks
 
 Every `ctx.py load` output includes the contents of `permission.md`.
 This file records what the user has permanently allowed or blocked,
 both globally and per project.
 
-### Before performing any action, check permission.md:
-- If the action is listed under **Allowed Directories** or **Allowed Commands**
-  (globally or for this project), proceed without asking.
-- If it is listed under **Blocked Directories** or **Blocked Commands**, refuse.
-- If it is not listed, ask the user (see below).
+### CRITICAL: Easybase permission check happens FIRST
 
-### When you need to ask for permission:
+Before you attempt any action that accesses a directory or runs a
+command, you MUST check permission.md and ask the user BEFORE the
+action triggers any built-in permission prompt from your host app
+(Claude Code, Cursor, etc.).
 
-Present the options directly in your message. For example:
+The order is:
+1. You need to access a directory or run a command
+2. Check permission.md — is it already allowed?
+3. If YES → proceed
+4. If BLOCKED → Easybase denies it. After that, the AI and its host
+   app can handle the situation however they want — Easybase does
+   not interfere further
+5. If NOT LISTED → you MUST ask the user NOW, before attempting
+   the action, with these exact choices:
 
-> I need to access `/Users/me/project/src`. How should I proceed?
-> 1. **Allow once** — I'll proceed this time only
-> 2. **Allow forever for this project** — I'll record this so you're never asked again
+> I need to [action]. This is not in your Easybase permissions yet.
+> 1. **Allow once** — just this time
+> 2. **Allow forever for this project** — save to permissions, never ask again
+> 3. **Block forever** — save to permissions, never attempt again
 
-If the user picks "allow forever", immediately call `easybase_permit`
-(or `ctx.py permit`) to save it, then proceed:
+If the user picks "allow forever", call `easybase_permit` to save it,
+then proceed with the action:
 ```
-easybase_permit(project="project-name", permission_type="allow_dir", value="/Users/me/project/src")
+easybase_permit(project="project-name", permission_type="allow_dir", value="/path")
 ```
 
-The user should never need to run a command or edit a file. They just
-pick an option from your message, and you handle the rest.
+If the user picks "block forever", call `easybase_permit` with the
+block type:
+```
+easybase_permit(project="project-name", permission_type="block_dir", value="/path")
+```
+
+This way the user answers ONCE through Easybase, and the permission
+is recorded permanently. The host app's own permission prompt may
+still appear after, but the user has already made their decision
+and won't be surprised.
 
 ### Permission types
 - `allow_dir` — AI can read and write in this directory

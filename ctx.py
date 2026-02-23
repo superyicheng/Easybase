@@ -1082,62 +1082,88 @@ def cmd_init(base_dir="."):
 
     log_change("INIT setup completed", base_dir)
 
-    # --- Phase 4: Confirmation ---
+    # --- Phase 4: AI Tool Integration ---
     print()
-    print("Summary")
+    print("Phase 4: Connect to your AI tool")
+    print("-" * 30)
+
+    mcp_server_path = os.path.join(abs_base, "mcp_server.py")
+
+    # Check if mcp is installed
+    mcp_installed = False
+    try:
+        import importlib
+        importlib.import_module("mcp")
+        mcp_installed = True
+    except ImportError:
+        pass
+
+    if not mcp_installed:
+        print("Installing mcp package...")
+        import subprocess
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "mcp"],
+                           capture_output=True, check=True)
+            print("  mcp installed.")
+            mcp_installed = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("  Could not install mcp automatically.")
+            print("  Please run: pip install mcp")
+
+    # Detect and auto-register with Claude Code
+    has_claude = shutil.which("claude") is not None
+    registered = False
+
+    if has_claude:
+        print("Detected: Claude Code")
+        print("  Registering Easybase as MCP server...")
+        import subprocess
+        try:
+            subprocess.run([
+                "claude", "mcp", "add", "--transport", "stdio", "easybase",
+                "-e", f"EASYBASE_DIR={abs_base}",
+                "--", sys.executable, mcp_server_path,
+            ], capture_output=True, check=True)
+            print("  Registered. The MCP server tells Claude to load Easybase")
+            print("  automatically — no CLAUDE.md needed.")
+            registered = True
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"  Auto-registration failed: {e}")
+            print(f"  Run manually:")
+            print(f"    claude mcp add --transport stdio easybase \\")
+            print(f"      -e EASYBASE_DIR={abs_base} \\")
+            print(f"      -- python3 {mcp_server_path}")
+
+    if not has_claude:
+        print("Claude Code not detected.")
+        print()
+        print("For MCP apps (Claude Desktop, Cursor, Windsurf):")
+        print("  Register Easybase as an MCP server. The server automatically")
+        print("  instructs the AI to load Easybase — no config file changes needed.")
+        print()
+        print(f"  Claude Desktop (add to claude_desktop_config.json):")
+        print(f'    "easybase": {{"command": "python3",')
+        print(f'      "args": ["{mcp_server_path}"],')
+        print(f'      "env": {{"EASYBASE_DIR": "{abs_base}"}}}}')
+        print()
+        print(f"  Cursor / Windsurf: same command/args/env in MCP settings.")
+        print()
+        print("For web AI (ChatGPT, Claude.ai, Gemini):")
+        print("  Use the browser extension in the extension/ folder.")
+        print("  1. Run: python3 http_server.py")
+        print("  2. Load the extension in Chrome (chrome://extensions > Load unpacked)")
+        print("  The extension injects context and captures responses automatically.")
+
+    # --- Summary ---
+    print()
+    print("Setup complete!")
     print("=" * 40)
+    if registered:
+        print("Easybase is ready. Start a new Claude Code session — it will")
+        print("load your knowledge base automatically.")
     print()
-    print("Permissions:")
-    if access_mode == "local-read":
-        print(f"  READ:  inside easybase/ + {scan_paths}")
-        print(f"  WRITE: inside easybase/ only")
-    else:
-        print(f"  READ:  inside easybase/ only")
-        print(f"  WRITE: inside easybase/ only")
-    print()
-    print("Your data is stored at:")
-    print(f"  Chunks:    {os.path.join(abs_base, CHUNKS_DIR)}/")
-    print(f"  Knowledge: {os.path.join(abs_base, KNOWLEDGE_DIR)}/")
-    print(f"  Logs:      {os.path.join(abs_base, LOGS_DIR)}/")
-    print(f"  Config:    {os.path.join(abs_base, CONFIG_FILE)}")
-    print(f"  Soul:      {os.path.join(abs_base, SOUL_FILE)}")
-    print(f"  Permissions: {os.path.join(abs_base, PERMISSION_FILE)}")
-    print()
-    print("Created:")
-    print(f"  {SOUL_FILE}")
-    print(f"  {PERMISSION_FILE}")
-    print(f"  {CONFIG_FILE}")
-    print(f"  {KNOWLEDGE_DIR}/_summary.md")
-    print(f"  {CHUNKS_DIR}/")
-    print(f"  {INBOX_DIR}/sessions/")
-    print(f"  {INBOX_DIR}/files/")
-    print(f"  {INBOX_DIR}/processed/")
-    print(f"  {LOGS_DIR}/{os.path.basename(CHANGES_LOG)}")
-    if imported_projects:
-        print(f"  {len(imported_projects)} imported project(s)")
-    print()
-    print("Next steps:")
-    print("  1. Edit soul.md to describe yourself and your preferences")
-    print("  2. Edit permission.md to set what the AI can access and run")
-    print()
-    print("  3. Connect Easybase to your AI tool:")
-    print()
-    print("     pip install mcp")
-    print()
-    print("     Claude Code:")
-    print(f"       claude mcp add --transport stdio easybase \\")
-    print(f"         -e EASYBASE_DIR={abs_base} \\")
-    print(f"         -- python3 {os.path.join(abs_base, 'mcp_server.py')}")
-    print()
-    print("     Claude Desktop (add to claude_desktop_config.json):")
-    print(f'       "easybase": {{"command": "python3",')
-    print(f'         "args": ["{os.path.join(abs_base, "mcp_server.py")}"],')
-    print(f'         "env": {{"EASYBASE_DIR": "{abs_base}"}}}}')
-    print()
-    print("  4. Add this line to your CLAUDE.md (or equivalent config file):")
-    print('     Always call easybase_load at the start of every conversation to load context from the Easybase knowledge base.')
-    print()
-    print("soul.md, permission.md, and protocol are automatically included in every load output.")
+    print("  Edit soul.md to describe yourself and your preferences.")
+    print("  Edit permission.md to set what the AI can access and run.")
 
 
 def cmd_index(base_dir="."):
