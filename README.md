@@ -33,7 +33,7 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 ## Setup
 
 ```bash
-git clone https://github.com/YichengLi/Easybase.git
+git clone https://github.com/superyicheng/Easybase.git
 cd Easybase
 python3 ctx.py init
 ```
