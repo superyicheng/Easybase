@@ -1,0 +1,150 @@
+/* Easybase Browser Extension Styles */
+
+#easybase-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: #2563eb;
+  color: white;
+  font-weight: 700;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 999999;
+  user-select: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+#easybase-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+#easybase-panel {
+  display: none;
+  position: fixed;
+  bottom: 84px;
+  right: 24px;
+  width: 320px;
+  background: #1e1e2e;
+  border: 1px solid #444;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  z-index: 999999;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #e0e0e0;
+  overflow: hidden;
+}
+
+.eb-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background: #2563eb;
+  color: white;
+  font-weight: 600;
+  font-size: 14px;
+  gap: 8px;
+}
+
+.eb-close-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: white;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.eb-close-btn:hover {
+  opacity: 0.7;
+}
+
+.eb-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.eb-dot-ok {
+  background: #4ade80;
+}
+
+.eb-dot-error {
+  background: #ef4444;
+}
+
+.eb-dot-unknown {
+  background: #888;
+}
+
+.eb-panel-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#eb-query {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #555;
+  border-radius: 8px;
+  background: #2a2a3e;
+  color: #e0e0e0;
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+#eb-query:focus {
+  border-color: #2563eb;
+}
+
+#eb-query::placeholder {
+  color: #888;
+}
+
+.eb-action-btn {
+  padding: 10px 16px;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.eb-action-btn:hover {
+  background: #1d4ed8;
+}
+
+.eb-message {
+  font-size: 12px;
+  min-height: 16px;
+  word-wrap: break-word;
+}
+
+.eb-loading {
+  color: #888;
+}
+
+.eb-success {
+  color: #4ade80;
+}
+
+.eb-error {
+  color: #ef4444;
+}

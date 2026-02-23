@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Easybase — BM25-based context management for AI knowledge bases."""
 
+import io
 import json
 import math
 import os
@@ -11,6 +12,11 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+
+
+class EasybaseError(Exception):
+    """Raised instead of sys.exit() in internal functions."""
+    pass
 
 # --- Defaults ---
 
@@ -171,6 +177,7 @@ def generate_yaml(config):
         ("access", "allowed_paths"): "# only used if mode is local-read",
         ("scan", "paths"): "# directories to scan for projects",
         ("scan", "max_depth"): "# how deep to scan (default 3)",
+        ("enforcement", "citation_required"): "# true = AI must cite chunks and not use own memory",
     }
 
     for section_key, section_val in config.items():
@@ -204,7 +211,8 @@ def generate_yaml(config):
 
 def _default_config(name="", description="", storage_mode="all",
                     access_mode="sandbox", max_top_k=DEFAULT_MAX_TOP_K,
-                    owner="", owner_role="", scan_paths=None):
+                    owner="", owner_role="", scan_paths=None,
+                    enforcement=False):
     if scan_paths is None:
         scan_paths = []
     allowed_paths = scan_paths if access_mode == "local-read" else []
@@ -218,6 +226,7 @@ def _default_config(name="", description="", storage_mode="all",
         "storage": {"mode": storage_mode},
         "access": {"mode": access_mode, "allowed_paths": allowed_paths},
         "scan": {"paths": scan_paths, "max_depth": 3},
+        "enforcement": {"citation_required": enforcement},
         "search": {
             "max_top_k": max_top_k,
             "bm25_k1": DEFAULT_K1,
@@ -251,6 +260,8 @@ def load_config(base_dir="."):
     s.setdefault("bm25_b", DEFAULT_B)
     s.setdefault("idf_floor", DEFAULT_IDF_FLOOR)
     config.setdefault("tree", {"sibling_read": True})
+    e = config.setdefault("enforcement", {})
+    e.setdefault("citation_required", False)
 
     return config
 
@@ -328,6 +339,19 @@ def _find_projects(scan_paths, max_depth=3, exclude_dir=None):
     return list(projects.values())
 
 
+def _basic_auto_tags(text, max_tags=10):
+    """Extract top meaningful keywords from text for auto-tagging."""
+    tokens = tokenize(text)
+    if not tokens:
+        return []
+    counts = defaultdict(int)
+    for t in tokens:
+        counts[t] += 1
+    # Sort by frequency, take top N
+    sorted_terms = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    return [term for term, _ in sorted_terms[:max_tags]]
+
+
 def _sanitize_id(name):
     """Convert a project name to a safe chunk ID component."""
     sanitized = re.sub(r'[^a-z0-9]', '-', name.lower())
@@ -369,6 +393,11 @@ def _import_project_file(project, base_dir="."):
         chunk_id = f"proj-{safe_name}-{file_tag}"
 
         tags = [filename.replace('/', '-'), "project", "imported"]
+        # Auto-generate keyword tags from file content
+        auto_tags = _basic_auto_tags(body)
+        for t in auto_tags:
+            if t not in tags:
+                tags.append(t)
         summary = f"{proj_name} — {filename}"
 
         lines = ["---"]
@@ -712,8 +741,7 @@ def load_index(base_dir="."):
     """Load the precomputed index."""
     index_path = os.path.join(base_dir, INDEX_FILE)
     if not os.path.exists(index_path):
-        print(f"Error: {INDEX_FILE} not found. Run 'python3 ctx.py index' first.")
-        sys.exit(1)
+        raise EasybaseError(f"Error: {INDEX_FILE} not found. Run 'python3 ctx.py index' first.")
     with open(index_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
@@ -873,6 +901,14 @@ def cmd_init(base_dir="."):
     max_top_k_str = input(f"Maximum chunks to retrieve per search [default {DEFAULT_MAX_TOP_K}]: ").strip()
     max_top_k = int(max_top_k_str) if max_top_k_str.isdigit() else DEFAULT_MAX_TOP_K
 
+    print()
+    print("Enforcement mode controls whether the AI must use ONLY the knowledge base")
+    print("or can also use its own memory.")
+    print("  [1] Off — AI can use both the knowledge base AND its own memory (default)")
+    print("  [2] On — AI must use ONLY the knowledge base, cite chunks, never rely on memory")
+    enforcement_choice = input("Choice [1]: ").strip() or "1"
+    enforcement = enforcement_choice == "2"
+
     # --- Phase 3: Project Discovery ---
     print()
     print("Phase 3: Project Discovery")
@@ -973,6 +1009,7 @@ def cmd_init(base_dir="."):
         name=name, description=description, storage_mode=storage_mode,
         access_mode=access_mode, max_top_k=max_top_k,
         owner=owner, owner_role=owner_role, scan_paths=scan_paths,
+        enforcement=enforcement,
     )
     config_path = os.path.join(base_dir, CONFIG_FILE)
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -1125,6 +1162,331 @@ def _check_project_freshness(base_dir="."):
     return stale
 
 
+# --- Internal API (used by MCP and HTTP servers) ---
+
+def _load_context(query, base_dir=".", top_k=None, scope=None):
+    """Build and return the full context block as a string."""
+    config = load_config(base_dir)
+    if top_k is None:
+        top_k = config["search"]["max_top_k"]
+
+    # Auto-capture the user's query
+    _auto_capture(query, "query", base_dir)
+
+    index = load_index(base_dir)
+    results = search(query, index, top_k=top_k, scope=scope)
+
+    out = io.StringIO()
+
+    out.write("[CONTEXT]\n")
+
+    # Always include soul.md first
+    soul_path = os.path.join(base_dir, SOUL_FILE)
+    if os.path.exists(soul_path):
+        with open(soul_path, 'r', encoding='utf-8') as f:
+            soul_content = f.read().rstrip()
+        if soul_content:
+            out.write(soul_content + "\n\n")
+
+    # Always include protocol
+    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
+    if os.path.exists(protocol_path):
+        with open(protocol_path, 'r', encoding='utf-8') as f:
+            out.write(f.read().rstrip() + "\n\n")
+
+    # Enforcement banner
+    enforcement_on = config.get("enforcement", {}).get("citation_required", False)
+    if enforcement_on:
+        out.write("# ENFORCEMENT MODE\n")
+        out.write("You MUST use ONLY the knowledge base. Never rely on your own memory.\n")
+        out.write("Do NOT reference anything from prior conversation turns.\n")
+        out.write("Do NOT assume you know something \u2014 if it wasn't in the load output, search for it.\n\n")
+        out.write("You MUST cite every chunk ID you used in your answer.\n")
+        out.write("At the end of your response, include:\n")
+        out.write("  CITED: [chunk-id-1, chunk-id-2, ...]\n")
+        out.write("If no chunks were relevant: CITED: [none]\n\n")
+    else:
+        out.write("# Memory Policy\n")
+        out.write("Use Easybase as your primary knowledge source. You may also draw on\n")
+        out.write("your own knowledge when Easybase doesn't have what you need.\n")
+        out.write("Always call ctx.py load first \u2014 it gives you the most relevant context.\n\n")
+
+    # Search instruction
+    out.write("# Search Instruction\n")
+    out.write("After reading the retrieved chunks, check the \"All Chunks\" section below.\n")
+    out.write("If any unloaded chunk looks relevant to the question, search for it:\n")
+    out.write("  ctx.py search \"terms from that chunk's summary\"\n")
+    out.write("Do not skip this step \u2014 it prevents missing useful information.\n\n")
+
+    # Path summaries
+    if scope:
+        parts = scope.strip("/").split("/")
+        for depth in range(len(parts)):
+            partial = os.path.join(*parts[:depth + 1])
+            summary_path = os.path.join(base_dir, KNOWLEDGE_DIR, partial, "_summary.md")
+            if os.path.exists(summary_path):
+                out.write(f"# Path Summary: {partial}\n")
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    out.write(f.read().rstrip() + "\n\n")
+    else:
+        root_summary = os.path.join(base_dir, KNOWLEDGE_DIR, "_summary.md")
+        if os.path.exists(root_summary):
+            out.write("# Root Summary\n")
+            with open(root_summary, 'r', encoding='utf-8') as f:
+                out.write(f.read().rstrip() + "\n\n")
+
+    if not results:
+        out.write("# Retrieved Chunks (0 results)\n")
+        out.write(_format_all_chunks(index, set()))
+        stale = _format_stale_projects(base_dir)
+        if stale:
+            out.write(stale)
+        out.write("\n[/CONTEXT]")
+        return out.getvalue()
+
+    # Load chunk bodies
+    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
+    chunk_contents = []
+    for r in results:
+        filepath = os.path.join(chunks_dir, r["path"])
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            chunk_contents.append((r, content))
+        else:
+            chunk_contents.append((r, f"[File not found: {r['path']}]"))
+
+    out.write(f"# Retrieved Chunks ({len(results)} results)\n")
+    for r, content in chunk_contents:
+        out.write(f"\n\u2500\u2500 {r['id']} | {r['summary']} | score={r['score']} \u2500\u2500\n")
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                out.write(parts[2].strip() + "\n")
+            else:
+                out.write(content + "\n")
+        else:
+            out.write(content + "\n")
+
+    # Cross-references
+    out.write(f"\n# Cross-References\n")
+    for r, content in chunk_contents:
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("\u2192 see:") or stripped.startswith("-> see:"):
+                out.write(f"{r['id']} {stripped}\n")
+                break
+
+    out.write(_format_all_chunks(index, {r["id"] for r in results}))
+    stale = _format_stale_projects(base_dir)
+    if stale:
+        out.write(stale)
+    out.write("\n[/CONTEXT]")
+    return out.getvalue()
+
+
+def _search_results(query, base_dir=".", top_k=None, scope=None):
+    """Search and return list of result dicts."""
+    config = load_config(base_dir)
+    if top_k is None:
+        top_k = config["search"]["max_top_k"]
+    index = load_index(base_dir)
+    return search(query, index, top_k=top_k, scope=scope)
+
+
+def _add_chunk(chunk_id, summary, body="", domain="", tags="",
+               depends="", tree_path="", base_dir="."):
+    """Create a chunk file, symlink, rebuild index. Returns status message."""
+    if not chunk_id or not summary:
+        raise EasybaseError("--id and --summary are required.")
+
+    tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    depends_list = [d.strip() for d in depends.split(",") if d.strip()] if depends else []
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    lines = ["---"]
+    lines.append(f"id: {chunk_id}")
+    if domain:
+        lines.append(f"domain: {domain}")
+    lines.append(f"summary: {summary}")
+    if tags_list:
+        lines.append(f"tags: [{', '.join(tags_list)}]")
+    if depends_list:
+        lines.append(f"depends: [{', '.join(depends_list)}]")
+    if tree_path:
+        lines.append(f"tree_path: {tree_path}")
+    lines.append(f"updated: {today}")
+    lines.append("---")
+    lines.append("")
+    if body:
+        lines.append(body)
+    lines.append("")
+
+    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
+    os.makedirs(chunks_dir, exist_ok=True)
+    filepath = os.path.join(chunks_dir, f"{chunk_id}.md")
+
+    msgs = []
+    if os.path.exists(filepath):
+        msgs.append(f"Warning: {filepath} already exists. Overwriting.")
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write("\n".join(lines))
+    msgs.append(f"Created {filepath}")
+
+    if tree_path:
+        knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
+        tree_dir = os.path.join(knowledge_dir, tree_path)
+        os.makedirs(tree_dir, exist_ok=True)
+
+        link_path = os.path.join(tree_dir, f"{chunk_id}.md")
+        chunk_abs = os.path.abspath(filepath)
+        link_abs = os.path.abspath(link_path)
+        rel_target = os.path.relpath(chunk_abs, os.path.dirname(link_abs))
+
+        if os.path.exists(link_path) or os.path.islink(link_path):
+            os.remove(link_path)
+        os.symlink(rel_target, link_path)
+        msgs.append(f"Linked {link_path} \u2192 {rel_target}")
+
+    tree_info = f" tree:{tree_path}" if tree_path else ""
+    log_change(f'ADD {chunk_id} "{summary}"{tree_info}', base_dir)
+
+    # Capture index output
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    build_index(base_dir)
+    index_output = sys.stdout.getvalue()
+    sys.stdout = old_stdout
+    msgs.append(index_output.strip())
+
+    return "\n".join(msgs)
+
+
+def _record_response(content, base_dir="."):
+    """Record AI response with enforcement check. Returns status message."""
+    if not content or not content.strip():
+        raise EasybaseError("No content to record.")
+
+    config = load_config(base_dir)
+    enforcement_on = config.get("enforcement", {}).get("citation_required", False)
+    cited_ids = []
+
+    if enforcement_on:
+        match = re.search(r'CITED:\s*\[([^\]]*)\]', content)
+        if not match:
+            raise EasybaseError(
+                "Enforcement mode is on. Response must contain CITED: [chunk-id, ...]\n"
+                "The AI must cite which chunks it used. See the protocol for format."
+            )
+        raw = match.group(1).strip()
+        if raw and raw.lower() != "none":
+            cited_ids = [c.strip() for c in raw.split(",") if c.strip()]
+
+    sessions_dir = os.path.join(base_dir, INBOX_DIR, "sessions")
+    os.makedirs(sessions_dir, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    ts_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{ts_file}_response.md"
+    filepath = os.path.join(sessions_dir, filename)
+
+    file_lines = ["---", "type: response", f"timestamp: {ts}"]
+    if cited_ids:
+        file_lines.append(f"cited: [{', '.join(cited_ids)}]")
+    file_lines.extend(["---", "", content, ""])
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write("\n".join(file_lines))
+
+    log_change(f"CAPTURE response:{filename}", base_dir)
+
+    if cited_ids:
+        return f"Response recorded. Cited: {', '.join(cited_ids)}"
+    return "Response recorded."
+
+
+def _rebuild_index(base_dir="."):
+    """Rebuild index and return status message."""
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        build_index(base_dir)
+    except SystemExit:
+        pass
+    output = sys.stdout.getvalue()
+    sys.stdout = old_stdout
+    return output.strip()
+
+
+def _get_stats(base_dir="."):
+    """Return stats as a string."""
+    index = load_index(base_dir)
+
+    N = index["N"]
+    inverted = index["inverted"]
+    avgdl = index["avgdl"]
+
+    unique_terms = len(inverted)
+    posting_lengths = [entry["df"] for entry in inverted.values()]
+    avg_posting = sum(posting_lengths) / len(posting_lengths) if posting_lengths else 0
+    max_entry = max(inverted.items(), key=lambda x: x[1]["df"]) if inverted else ("", {"df": 0})
+    df1_count = sum(1 for entry in inverted.values() if entry["df"] == 1)
+    sorted_by_df_desc = sorted(inverted.items(), key=lambda x: x[1]["df"], reverse=True)[:5]
+    sorted_by_df_asc = sorted(inverted.items(), key=lambda x: x[1]["df"])[:3]
+
+    idf_floor = index.get("idf_floor", DEFAULT_IDF_FLOOR)
+
+    def compute_idf(df):
+        return max(math.log((N - df + 0.5) / (df + 0.5) + 1), idf_floor)
+
+    knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
+    tree_depth = 0
+    summary_count = 0
+    max_summary_tokens = 0
+    max_summary_path = ""
+
+    if os.path.isdir(knowledge_dir):
+        for root, dirs, files in os.walk(knowledge_dir):
+            rel = os.path.relpath(root, knowledge_dir)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth > tree_depth:
+                tree_depth = depth
+            for fname in files:
+                if fname == "_summary.md":
+                    summary_count += 1
+                    fpath = os.path.join(root, fname)
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        file_content = f.read()
+                    est_tokens = len(file_content) // 4
+                    if est_tokens > max_summary_tokens:
+                        max_summary_tokens = est_tokens
+                        max_summary_path = os.path.relpath(fpath, base_dir)
+
+    out = io.StringIO()
+    out.write("=== Easybase Index Stats ===\n")
+    out.write(f"Chunks (N):          {N}\n")
+    out.write(f"Unique terms:        {unique_terms}\n")
+    out.write(f"Avg doc length:      {avgdl:.1f} tokens\n")
+    out.write(f"Avg posting length:  {avg_posting:.2f}\n")
+    out.write(f'Max posting list:    "{max_entry[0]}" (df={max_entry[1]["df"]})\n')
+    out.write(f"Terms with df=1:     {df1_count}\n")
+    out.write(f"\nTree depth:          {tree_depth}\n")
+    out.write(f"Summary files:       {summary_count}\n")
+    if max_summary_path:
+        out.write(f"Largest summary:     {max_summary_path} (~{max_summary_tokens} tokens)\n")
+    out.write("\nTop-5 highest df terms:\n")
+    for term, entry in sorted_by_df_desc:
+        out.write(f"  {term:<20} df={entry['df']:<4} idf={compute_idf(entry['df']):.3f}\n")
+    out.write("\nBottom-3 lowest df terms:\n")
+    for term, entry in sorted_by_df_asc:
+        out.write(f"  {term:<20} df={entry['df']:<4} idf={compute_idf(entry['df']):.3f}\n")
+
+    return out.getvalue().rstrip()
+
+
+# --- CLI Commands (thin wrappers) ---
+
 def cmd_load(args, base_dir="."):
     """Search + display full context block with protocol."""
     if not args:
@@ -1147,103 +1509,34 @@ def cmd_load(args, base_dir="."):
         else:
             i += 1
 
-    # Auto-capture the user's query
-    _auto_capture(query, "query", base_dir)
-
-    index = load_index(base_dir)
-    results = search(query, index, top_k=top_k, scope=scope)
-
-    print("[CONTEXT]")
-
-    # Always include soul.md first — user-level context
-    soul_path = os.path.join(base_dir, SOUL_FILE)
-    if os.path.exists(soul_path):
-        with open(soul_path, 'r', encoding='utf-8') as f:
-            soul_content = f.read().rstrip()
-        if soul_content:
-            print(soul_content)
-            print()
-
-    # Always include protocol
-    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
-    if os.path.exists(protocol_path):
-        with open(protocol_path, 'r', encoding='utf-8') as f:
-            print(f.read().rstrip())
-        print()
-
-    # Include path summaries
-    if scope:
-        # Read _summary.md files along the scope path
-        parts = scope.strip("/").split("/")
-        for depth in range(len(parts)):
-            partial = os.path.join(*parts[:depth + 1])
-            summary_path = os.path.join(base_dir, KNOWLEDGE_DIR, partial, "_summary.md")
-            if os.path.exists(summary_path):
-                print(f"# Path Summary: {partial}")
-                with open(summary_path, 'r', encoding='utf-8') as f:
-                    print(f.read().rstrip())
-                print()
-    else:
-        # First call of session: include root summary
-        root_summary = os.path.join(base_dir, KNOWLEDGE_DIR, "_summary.md")
-        if os.path.exists(root_summary):
-            print("# Root Summary")
-            with open(root_summary, 'r', encoding='utf-8') as f:
-                print(f.read().rstrip())
-            print()
-
-    if not results:
-        print("# Retrieved Chunks (0 results)")
-        _print_stale_projects(base_dir)
-        print("[/CONTEXT]")
-        return
-
-    # Load chunk bodies
-    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
-    chunk_contents = []
-    for r in results:
-        filepath = os.path.join(chunks_dir, r["path"])
-        if os.path.exists(filepath):
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-            chunk_contents.append((r, content))
-        else:
-            chunk_contents.append((r, f"[File not found: {r['path']}]"))
-
-    print(f"# Retrieved Chunks ({len(results)} results)")
-    for r, content in chunk_contents:
-        print(f"\n\u2500\u2500 {r['id']} | {r['summary']} | score={r['score']} \u2500\u2500")
-        if content.startswith("---"):
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                print(parts[2].strip())
-            else:
-                print(content)
-        else:
-            print(content)
-
-    # Cross-references
-    print(f"\n# Cross-References")
-    for r, content in chunk_contents:
-        for line in content.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("\u2192 see:") or stripped.startswith("-> see:"):
-                print(f"{r['id']} {stripped}")
-                break
-
-    _print_stale_projects(base_dir)
-    print("[/CONTEXT]")
+    print(_load_context(query, base_dir, top_k, scope))
 
 
-def _print_stale_projects(base_dir="."):
-    """Print stale project warnings if any."""
+def _format_all_chunks(index, matched_ids):
+    """Format full inventory of all chunks for systemic error prevention."""
+    chunks_meta = index.get("chunks", {})
+    if not chunks_meta:
+        return ""
+    lines = ["\n# All Chunks"]
+    lines.append("If you need information not covered above, search for these:")
+    for cid in sorted(chunks_meta.keys()):
+        marker = "  *" if cid in matched_ids else "   "
+        summary = chunks_meta[cid].get("summary", "")
+        lines.append(f"{marker} {cid} \u2014 {summary}")
+    return "\n".join(lines)
+
+
+def _format_stale_projects(base_dir="."):
+    """Format stale project warnings if any."""
     stale = _check_project_freshness(base_dir)
-    if stale:
-        print("\n# Stale Projects")
-        print("The following imported projects have changed since import:")
-        for s in stale:
-            print(f"  - {s['project']} ({s['file']} modified {s['modified']}, imported {s['imported']})")
-        print("Run `ctx.py scan` to re-import.")
+    if not stale:
+        return ""
+    lines = ["\n# Stale Projects"]
+    lines.append("The following imported projects have changed since import:")
+    for s in stale:
+        lines.append(f"  - {s['project']} ({s['file']} modified {s['modified']}, imported {s['imported']})")
+    lines.append("Run `ctx.py scan` to re-import.")
+    return "\n".join(lines)
 
 
 def cmd_add(args, base_dir="."):
@@ -1288,63 +1581,12 @@ def cmd_add(args, base_dir="."):
         print('  [--tree-path "path/to/branch"]')
         sys.exit(1)
 
-    tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-    depends_list = [d.strip() for d in depends.split(",") if d.strip()] if depends else []
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    lines = ["---"]
-    lines.append(f"id: {chunk_id}")
-    if domain:
-        lines.append(f"domain: {domain}")
-    lines.append(f"summary: {summary}")
-    if tags_list:
-        lines.append(f"tags: [{', '.join(tags_list)}]")
-    if depends_list:
-        lines.append(f"depends: [{', '.join(depends_list)}]")
-    if tree_path:
-        lines.append(f"tree_path: {tree_path}")
-    lines.append(f"updated: {today}")
-    lines.append("---")
-    lines.append("")
-    if body:
-        lines.append(body)
-    lines.append("")
-
-    # Write chunk file
-    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
-    os.makedirs(chunks_dir, exist_ok=True)
-    filepath = os.path.join(chunks_dir, f"{chunk_id}.md")
-
-    if os.path.exists(filepath):
-        print(f"Warning: {filepath} already exists. Overwriting.")
-
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write("\n".join(lines))
-
-    print(f"Created {filepath}")
-
-    # Create symlink in knowledge tree if tree_path provided
-    if tree_path:
-        knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
-        tree_dir = os.path.join(knowledge_dir, tree_path)
-        os.makedirs(tree_dir, exist_ok=True)
-
-        link_path = os.path.join(tree_dir, f"{chunk_id}.md")
-        chunk_abs = os.path.abspath(filepath)
-        link_abs = os.path.abspath(link_path)
-        rel_target = os.path.relpath(chunk_abs, os.path.dirname(link_abs))
-
-        if os.path.exists(link_path) or os.path.islink(link_path):
-            os.remove(link_path)
-        os.symlink(rel_target, link_path)
-        print(f"Linked {link_path} \u2192 {rel_target}")
-
-    # Log the operation
-    tree_info = f" tree:{tree_path}" if tree_path else ""
-    log_change(f'ADD {chunk_id} "{summary}"{tree_info}', base_dir)
-
-    # Rebuild index
-    build_index(base_dir)
+    try:
+        result = _add_chunk(chunk_id, summary, body, domain, tags, depends, tree_path, base_dir)
+        print(result)
+    except EasybaseError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 def cmd_ingest(base_dir="."):
@@ -1403,69 +1645,7 @@ def cmd_ingest(base_dir="."):
 
 def cmd_stats(base_dir="."):
     """Show index and tree statistics."""
-    index = load_index(base_dir)
-
-    N = index["N"]
-    inverted = index["inverted"]
-    avgdl = index["avgdl"]
-
-    unique_terms = len(inverted)
-    posting_lengths = [entry["df"] for entry in inverted.values()]
-    avg_posting = sum(posting_lengths) / len(posting_lengths) if posting_lengths else 0
-    max_entry = max(inverted.items(), key=lambda x: x[1]["df"]) if inverted else ("", {"df": 0})
-    df1_count = sum(1 for entry in inverted.values() if entry["df"] == 1)
-    sorted_by_df_desc = sorted(inverted.items(), key=lambda x: x[1]["df"], reverse=True)[:5]
-    sorted_by_df_asc = sorted(inverted.items(), key=lambda x: x[1]["df"])[:3]
-
-    idf_floor = index.get("idf_floor", DEFAULT_IDF_FLOOR)
-
-    def compute_idf(df):
-        return max(math.log((N - df + 0.5) / (df + 0.5) + 1), idf_floor)
-
-    # Tree stats
-    knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
-    tree_depth = 0
-    summary_count = 0
-    max_summary_tokens = 0
-    max_summary_path = ""
-
-    if os.path.isdir(knowledge_dir):
-        for root, dirs, files in os.walk(knowledge_dir):
-            rel = os.path.relpath(root, knowledge_dir)
-            depth = 0 if rel == "." else rel.count(os.sep) + 1
-            if depth > tree_depth:
-                tree_depth = depth
-            for fname in files:
-                if fname == "_summary.md":
-                    summary_count += 1
-                    fpath = os.path.join(root, fname)
-                    with open(fpath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    est_tokens = len(content) // 4
-                    if est_tokens > max_summary_tokens:
-                        max_summary_tokens = est_tokens
-                        max_summary_path = os.path.relpath(fpath, base_dir)
-
-    print("=== Easybase Index Stats ===")
-    print(f"Chunks (N):          {N}")
-    print(f"Unique terms:        {unique_terms}")
-    print(f"Avg doc length:      {avgdl:.1f} tokens")
-    print(f"Avg posting length:  {avg_posting:.2f}")
-    print(f'Max posting list:    "{max_entry[0]}" (df={max_entry[1]["df"]})')
-    print(f"Terms with df=1:     {df1_count}")
-
-    print(f"\nTree depth:          {tree_depth}")
-    print(f"Summary files:       {summary_count}")
-    if max_summary_path:
-        print(f"Largest summary:     {max_summary_path} (~{max_summary_tokens} tokens)")
-
-    print("\nTop-5 highest df terms:")
-    for term, entry in sorted_by_df_desc:
-        print(f"  {term:<20} df={entry['df']:<4} idf={compute_idf(entry['df']):.3f}")
-
-    print("\nBottom-3 lowest df terms:")
-    for term, entry in sorted_by_df_asc:
-        print(f"  {term:<20} df={entry['df']:<4} idf={compute_idf(entry['df']):.3f}")
+    print(_get_stats(base_dir))
 
 
 def cmd_check(base_dir="."):
@@ -1642,12 +1822,10 @@ def cmd_respond(args, base_dir="."):
                 content = f.read()
             i += 2
         else:
-            # Treat first positional arg as the response content
             if content is None:
                 content = args[i]
             i += 1
 
-    # Read from stdin if no content provided
     if content is None:
         if not sys.stdin.isatty():
             content = sys.stdin.read()
@@ -1657,12 +1835,12 @@ def cmd_respond(args, base_dir="."):
             print('       echo "response" | python3 ctx.py respond')
             sys.exit(1)
 
-    if not content.strip():
-        print("Error: No content to record.")
+    try:
+        result = _record_response(content, base_dir)
+        print(result)
+    except EasybaseError as e:
+        print(f"Error: {e}")
         sys.exit(1)
-
-    _auto_capture(content, "response", base_dir)
-    print("Response recorded.")
 
 
 def cmd_scan(args, base_dir="."):
@@ -1747,6 +1925,10 @@ def main():
         print("  scan [--paths ...]                 Re-scan for projects")
         print("  stats                              Show index statistics")
         print("  check                              Validate system integrity")
+        print()
+        print("Enforcement mode (configurable during init or in config.yaml):")
+        print("  Off (default): AI can use knowledge base + own memory")
+        print("  On: AI must cite chunks, cannot use own memory")
         sys.exit(0)
 
     cmd = sys.argv[1]
@@ -1780,4 +1962,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except EasybaseError as e:
+        print(str(e))
+        sys.exit(1)

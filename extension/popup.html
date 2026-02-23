@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 300px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1e1e2e;
+      color: #e0e0e0;
+      margin: 0;
+    }
+    h2 {
+      margin: 0 0 12px 0;
+      font-size: 16px;
+      color: #2563eb;
+    }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 8px 12px;
+      background: #2a2a3e;
+      border-radius: 8px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .dot-ok { background: #4ade80; }
+    .dot-error { background: #ef4444; }
+    .dot-unknown { background: #888; }
+    .status-text {
+      font-size: 13px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #555;
+      border-radius: 6px;
+      background: #2a2a3e;
+      color: #e0e0e0;
+      font-size: 13px;
+      box-sizing: border-box;
+      margin-bottom: 10px;
+    }
+    input[type="text"]:focus {
+      outline: none;
+      border-color: #2563eb;
+    }
+    button {
+      padding: 8px 14px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      margin-right: 6px;
+    }
+    button:hover { background: #1d4ed8; }
+    .info {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #666;
+    }
+    .info a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <h2>Easybase</h2>
+
+  <div class="status-row">
+    <span id="status-dot" class="dot dot-unknown"></span>
+    <span id="status-text" class="status-text">Checking...</span>
+  </div>
+
+  <label>Server URL</label>
+  <input type="text" id="server-url" placeholder="http://127.0.0.1:8372" />
+
+  <button id="save-btn">Save</button>
+  <button id="test-btn">Test</button>
+
+  <div class="info">
+    The extension connects to a local Easybase HTTP server.<br>
+    Run <code>python3 http_server.py</code> to start it.
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

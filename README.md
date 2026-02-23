@@ -18,44 +18,30 @@ Easybase gives AI a structured external memory:
 
 **Every piece of useful information is extracted and delivered to the AI in full. Everything outside the query's scope is abstracted in the tree summaries — present as structure, not as noise.**
 
-### The Flow
-
-Every interaction follows this cycle:
-
-```
-1. User sends a message
-2. AI calls ctx.py load "message" — prompt auto-captured, context returned
-3. AI reasons using ONLY what Easybase returned, searching for sub-topics as needed
-4. AI answers the user
-5. AI calls ctx.py respond "answer" — response auto-captured
-6. AI stores any new knowledge via ctx.py add
-```
-
-The AI never relies on its own memory. Every fact is verified against the knowledge base. Every prompt and response is automatically recorded.
-
 ### Strengths
 
 - **All useful information, nothing else** — Relevant chunks are loaded in full. Everything else is abstracted in tree summaries. Never truncated, never diluted.
-- **User-first context** — soul.md gives the AI your background and preferences before touching any project knowledge. Bring an existing CLAUDE.md or .cursorrules, or create a fresh one.
-- **Zero dependencies** — Single Python file, standard library only. Drop it into any project.
-- **Scales without slowing down** — Search time is proportional to matches, not corpus size. The inverted index never scans the full corpus.
-- **Modified BM25 for knowledge bases** — IDF floor prevents common domain terms from being ignored. Reference weighting boosts foundational chunks automatically.
-- **AI-native design** — Tree summaries give abstract background; chunks give specific detail. The AI bridges vocabulary gaps that pure keyword search can't.
-- **Works with any AI** — Output of `ctx.py load` is plain text. Paste it into any chat, pipe it to any tool, use it with any API.
-- **Works with any domain** — Software, research, documentation, debugging, onboarding — anything that benefits from structured retrieval.
-- **Human-readable storage** — All chunks are plain Markdown. No database, no binary formats. Version control friendly.
-- **Automatic capture** — Every user prompt and AI response is automatically recorded when the AI follows the protocol. No manual recording needed.
-- **Audit trail** — Every operation logged with timestamps to `logs/changes.log`.
+- **User-first context** — soul.md gives the AI your background and preferences before touching any project knowledge.
+- **Zero dependencies** — Single Python file, standard library only.
+- **Works with any AI** — MCP server for Claude/Cursor, browser extension for ChatGPT/Claude.ai/Gemini, CLI for everything else.
+- **Synonym-aware search** — Chunks get comprehensive synonym tags. A search for "authentication" finds chunks about "login" too.
+- **Full inventory prevents missed info** — Every load output lists ALL chunks, so the AI can spot what BM25 didn't match.
+- **Configurable enforcement** — Optional mode where the AI must cite chunk IDs and cannot use its own memory.
+- **Automatic capture** — Every prompt and response is recorded automatically.
+- **Human-readable storage** — All chunks are plain Markdown. No database, no binary formats.
+- **Audit trail** — Every operation logged with timestamps.
 
 ### Tradeoffs
 
-- **Keyword-based, not semantic** — BM25 matches exact terms. The AI compensates by choosing good search terms after reading the tree summaries, but the retrieval itself is lexical.
-- **Manual chunking** — You (or the AI) write and maintain chunks. This gives full control over what gets stored and how it's summarized.
+- **Keyword-based, not semantic** — BM25 matches exact terms. Synonym tags reduce this gap significantly, but the retrieval itself is lexical.
+- **Manual chunking** — You (or the AI) write and maintain chunks. Full control over what gets stored.
 - **English-optimized tokenizer** — Stopword list and tokenization rules are designed for English text.
 
 ---
 
-## Quick Start
+## Setup
+
+### Step 1: Download and Initialize
 
 ```bash
 git clone <repo> easybase
@@ -65,84 +51,168 @@ python3 ctx.py init
 
 Follow the prompts. Init walks through 4 phases:
 1. **Identity** — your name, role, and user profile (imports existing CLAUDE.md, .cursorrules, etc. or creates a new soul.md)
-2. **Knowledge Base** — name, storage mode, search limits
+2. **Knowledge Base** — name, storage mode, search limits, enforcement mode
 3. **Project Discovery** — optionally scans your machine for existing projects and imports them as searchable chunks
 4. **Confirmation** — prints permissions, data locations, and next steps
 
-Then use `ctx.py load "your question"` to get context blocks.
-The soul.md, protocol, and relevant knowledge are automatically included in every output.
+### Step 2: Choose Your Integration
 
-## How It Works
+| Method | Best For | What the AI Can Do |
+|--------|----------|-------------------|
+| [MCP Server](#mcp-server) | Claude Desktop, Claude Code, Cursor, Windsurf | Everything — load, search, add, respond, index |
+| [Browser Extension](#browser-extension) | ChatGPT web, Claude.ai web, Gemini web | Load context into chat (inject into input field) |
+| [CLI / Terminal](#cli--terminal) | Scripts, pipelines, automation | Everything |
+| [Manual Paste](#manual-paste) | Any AI chat or app | Load context (copy/paste) |
 
-```
-1. User sends message to AI
-2. AI calls ctx.py load "message" — prompt auto-captured
-3. AI receives: soul.md + protocol + summaries + relevant chunks
-4. AI reads ONLY what was returned — no memory reliance
-5. For sub-questions: AI calls ctx.py search
-6. AI answers using soul context + structure + specific detail
-7. AI calls ctx.py respond "answer" — response auto-captured
-8. AI stores new knowledge as chunks (written for BM25 findability)
-9. AI updates summaries if understanding changed
-```
+---
 
-## Project Structure
+## MCP Server
 
-```
-├── ctx.py            Single-file engine. Python stdlib only.
-├── soul.md           User-level context. Loaded first every session.
-├── PROTOCOL.md       Instructions for AI. Auto-included in every load output.
-├── config.yaml       Generated during init. All settings here.
-├── knowledge/        The knowledge tree. Summaries at each level.
-│   └── _summary.md   Root summary — AI reads this after soul.md.
-├── chunks/           Flat chunk storage for BM25.
-├── inbox/            Drop files here for processing.
-│   ├── sessions/     Past conversation logs
-│   ├── files/        Documents, notes, anything
-│   └── processed/    Processed files moved here
-├── logs/
-│   └── changes.log   Audit trail of all operations
-├── index.json        Generated by ctx.py index
-└── projects.json     Registry of imported projects
-```
+**For: Claude Desktop, Claude Code, Cursor, Windsurf, and any MCP-compatible app.**
 
-## Commands
+The AI calls Easybase tools directly. All functions work automatically —
+load, search, add chunks, record responses, rebuild index, view stats.
+
+### Install
 
 ```bash
-# Initialize — interactive setup
-python3 ctx.py init
+pip install mcp
+```
 
-# Build search index from chunks/
-python3 ctx.py index
+### Claude Desktop
 
-# Search for chunks
+1. Open Claude Desktop
+2. Go to Settings > Developer > Edit Config
+3. Add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "easybase": {
+      "command": "python3",
+      "args": ["/absolute/path/to/easybase/mcp_server.py"],
+      "env": {
+        "EASYBASE_DIR": "/absolute/path/to/easybase"
+      }
+    }
+  }
+}
+```
+
+4. Restart Claude Desktop (Cmd+Q on Mac, not just close)
+5. The AI now has these tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_index`, `easybase_stats`
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio easybase \
+  -e EASYBASE_DIR=/absolute/path/to/easybase \
+  -- python3 /absolute/path/to/easybase/mcp_server.py
+```
+
+### Cursor / Windsurf
+
+Add to MCP settings with the same command/args/env pattern as Claude Desktop.
+
+### What the AI can do with MCP
+
+- Automatically load context for every user message
+- Search for follow-up information
+- Store new knowledge as chunks with synonym tags
+- Record responses for the audit trail
+- Rebuild the index after manual chunk edits
+- View knowledge base statistics
+
+---
+
+## Browser Extension
+
+**For: ChatGPT (web), Claude.ai (web), Gemini (web), and any browser-based AI chat.**
+
+Adds a floating "EB" button to supported AI chat pages. Click it, enter your query, and Easybase context is injected directly into the chat input field.
+
+### Install
+
+**1. Start the local server** (must be running while using the extension):
+
+```bash
+cd /path/to/easybase
+python3 http_server.py
+```
+
+This starts a local-only server at `http://127.0.0.1:8372`. It never leaves your machine.
+
+**2. Load the extension in Chrome** (or any Chromium browser — Edge, Brave, etc.):
+
+1. Go to `chrome://extensions`
+2. Enable **Developer mode** (top-right toggle)
+3. Click **Load unpacked**
+4. Select the `extension/` folder inside your easybase directory
+
+**3. Use it:**
+
+1. Visit ChatGPT, Claude.ai, or Gemini
+2. Click the blue **EB** button (bottom-right corner)
+3. Type your query
+4. Click **Load Context** — the context block is injected into the chat input
+5. Type your question after the context block and send
+
+### What works with the extension
+
+- Loading full context (soul.md + protocol + matched chunks + full inventory) into any supported web AI chat
+- The AI reads the injected context and follows the Easybase protocol
+- Server status shown in extension popup (green = connected)
+
+### What doesn't work with the extension
+
+- The AI cannot call Easybase tools directly (it reads injected text, not tool calls)
+- `respond` and `add` must be done via CLI — the extension is read-only
+- No automatic capture of AI responses
+
+### Custom server port
+
+```bash
+EASYBASE_PORT=9000 python3 http_server.py
+```
+
+Then update the server URL in the extension popup.
+
+---
+
+## CLI / Terminal
+
+**For: Scripts, pipelines, API integrations, and direct terminal use.**
+
+No extra setup beyond `ctx.py init`. All commands work immediately.
+
+```bash
+# Get full context block for AI
+python3 ctx.py load "your question"
+python3 ctx.py load "query" --top 5 --scope api/auth
+
+# Search for specific chunks
 python3 ctx.py search "query"
-python3 ctx.py search "query" --top 5 --scope api/auth -v
+python3 ctx.py search "query" --top 5 -v
 
-# Get full context block for AI (soul.md + protocol auto-included)
-python3 ctx.py load "query" --top 5
-python3 ctx.py load "query" --scope api/auth
-
-# Add a chunk (with optional tree placement)
+# Add a chunk
 python3 ctx.py add --id api-003 --summary "Rate limiting — sliding window" \
   --body "Content..." --domain backend --tags "throttle,limits" \
   --depends "api-001" --tree-path "api/performance"
 
-# Process inbox files for AI review
+# Record AI response
+python3 ctx.py respond "AI's complete answer"
+
+# Build search index
+python3 ctx.py index
+
+# Process inbox files
 python3 ctx.py ingest
 
-# Record AI response (called after answering — auto-captured)
-python3 ctx.py respond "AI's complete answer"
-python3 ctx.py respond --file /path/to/response.txt
+# Record session manually
+python3 ctx.py record --content "session transcript"
 
-# Record a session manually (for external logs)
-python3 ctx.py record --content "session transcript or summary"
-python3 ctx.py record --file /path/to/session.log
-echo "text" | python3 ctx.py record
-
-# Re-scan for new projects
+# Re-scan for projects
 python3 ctx.py scan
-python3 ctx.py scan --paths "~/code,~/projects"
 
 # View statistics
 python3 ctx.py stats
@@ -151,133 +221,146 @@ python3 ctx.py stats
 python3 ctx.py check
 ```
 
+### API integration
+
+```python
+import subprocess
+result = subprocess.run(
+    ["python3", "ctx.py", "load", "your question"],
+    capture_output=True, text=True
+)
+context = result.stdout
+```
+
+### Pipe to clipboard
+
+```bash
+python3 ctx.py load "question" | pbcopy      # macOS
+python3 ctx.py load "question" | xclip       # Linux
+```
+
+---
+
+## Manual Paste
+
+**For: Any AI chat or app. No setup beyond init.**
+
+Works everywhere — ChatGPT, Claude, Gemini, local models, mobile, anything.
+
+1. Run in terminal: `python3 ctx.py load "your question"`
+2. Copy the output
+3. Paste into any AI chat
+4. The AI reads the protocol and follows it
+
+This is the universal fallback. If nothing else works, manual paste always does.
+
+---
+
+## Where Easybase Won't Work
+
+| Platform | Why | Workaround |
+|----------|-----|------------|
+| **Mobile apps** (ChatGPT iOS/Android, Claude mobile) | No browser extensions, no CLI access | Copy/paste from a terminal on your computer |
+| **Desktop apps without MCP** (older versions, non-MCP apps) | No tool protocol support | Copy/paste from terminal, or upgrade to MCP-compatible version |
+| **Web AI behind corporate firewalls** | Extension or localhost may be blocked | Ask IT to allowlist localhost:8372, or use manual paste |
+| **Offline environments without Python** | Easybase requires Python 3.6+ | Install Python (Easybase itself works fully offline — no network needed) |
+
+---
+
+## How It Works
+
+```
+1. User sends message to AI
+2. AI calls easybase_load / ctx.py load — prompt auto-captured
+3. AI receives: soul.md + protocol + summaries + matched chunks + full inventory
+4. AI reads ONLY what was returned — no memory reliance
+5. AI checks All Chunks list for anything BM25 might have missed
+6. For sub-questions: AI calls easybase_search / ctx.py search
+7. AI answers using soul context + summaries + specific chunks
+8. AI calls easybase_respond / ctx.py respond — response auto-captured
+9. AI stores new knowledge as chunks with synonym tags
+10. AI updates summaries if understanding changed
+```
+
+## Project Structure
+
+```
+easybase/
+├── ctx.py              Core engine (Python stdlib only)
+├── mcp_server.py       MCP server (requires: pip install mcp)
+├── http_server.py      HTTP server for browser extension (stdlib only)
+├── soul.md             User-level context (loaded first every session)
+├── PROTOCOL.md         AI instructions (auto-included in every load)
+├── config.yaml         Settings (generated during init)
+├── extension/          Browser extension (Chrome Manifest V3)
+│   ├── manifest.json
+│   ├── background.js
+│   ├── content.js
+│   ├── popup.html/js
+│   ├── styles.css
+│   └── icons/
+├── knowledge/          Knowledge tree with summaries at each level
+│   └── _summary.md
+├── chunks/             Flat chunk storage for BM25
+├── inbox/
+│   ├── sessions/       Auto-captured queries and responses
+│   ├── files/          Documents dropped for processing
+│   └── processed/      Files moved here after ingest
+├── logs/
+│   └── changes.log     Audit trail
+├── index.json          BM25 index (regenerated by ctx.py index)
+└── projects.json       Registry of imported projects
+```
+
 ## soul.md
 
-The soul.md file is loaded at the very top of every `ctx.py load` output,
-before the protocol and before any project knowledge. It gives the AI
-your general context every session.
+Loaded at the very top of every `ctx.py load` output, before the protocol
+and before any project knowledge. Gives the AI your general context every session.
 
-During `ctx.py init`, you can:
-- **Import an existing file** — If you already have a CLAUDE.md, .cursorrules,
-  or any user profile file, Easybase will import it as your soul.md.
-- **Create a new one** — Easybase generates a template you fill in with
-  your role, preferences, current focus, and notes for the AI.
+During init, you can import an existing CLAUDE.md, .cursorrules, or any
+user profile file, or create a fresh template.
 
-## Where Everything Lives
+## Enforcement Mode
 
-Init prints the full paths at the end, but here's the layout:
+Optional. Controls whether the AI must use ONLY the knowledge base or can
+also draw on its own memory.
 
-| Location | What's there | Sensitive? |
-|----------|-------------|------------|
-| `chunks/` | All knowledge chunks (flat .md files) | Your knowledge |
-| `knowledge/` | Tree structure with summaries + symlinks to chunks | Structure only |
-| `knowledge/projects/` | Imported project summaries | Snapshots of external files |
-| `inbox/sessions/` | Recorded sessions waiting to be processed | Session transcripts |
-| `inbox/files/` | Dropped files waiting to be processed | Your files |
-| `logs/changes.log` | Timestamped audit trail of all operations | Operation history |
-| `config.yaml` | All settings (access mode, scan paths, search params) | Your configuration |
-| `soul.md` | Your user profile (loaded first every session) | Personal context |
-| `projects.json` | Registry of imported projects (paths, dates) | Project paths |
-| `index.json` | Precomputed search index (regenerated by `ctx.py index`) | Derived data |
+Enable during `ctx.py init` when prompted, or toggle in `config.yaml`:
 
-Everything is stored inside the easybase directory. Nothing is written outside it.
-
-## Managing Projects
-
-During init (Phase 3), Easybase can scan your machine for projects containing AI context files (CLAUDE.md, .cursorrules, README.md, etc.). Found projects are imported as searchable chunks under `knowledge/projects/`.
-
-After init, use `ctx.py scan` to find and import new projects:
-
-```bash
-python3 ctx.py scan                          # uses paths from init
-python3 ctx.py scan --paths "~/code,~/new"   # scan different paths
+```yaml
+enforcement:
+  citation_required: true
 ```
 
-Imported projects are snapshots — they capture the file contents at import time. The original files are not modified or monitored.
+**Off (default):** AI uses Easybase as primary source but may also use its own knowledge.
 
-## Recording Sessions
-
-**Automatic capture:** When the AI follows the protocol, every user prompt is auto-captured by `ctx.py load` and every AI response by `ctx.py respond`. These are saved to `inbox/sessions/` with timestamps and type tags (query/response).
-
-**Manual recording** for external session logs:
-
-```bash
-python3 ctx.py record --content "summary of what was discussed"
-python3 ctx.py record --file /path/to/chat-log.txt
-echo "session content" | python3 ctx.py record
-```
-
-All recordings go to `inbox/sessions/`. Process them with `ctx.py ingest`, then extract knowledge into chunks.
+**On:** AI must use ONLY the knowledge base. Every response must end with
+`CITED: [chunk-id-1, chunk-id-2, ...]`. The respond command rejects responses
+without citations (hard enforcement for MCP/CLI pipelines).
 
 ## Security Model
 
 Easybase is sandboxed by default.
 
-### Sandbox mode (default)
-
-    CAN read/write:  everything inside easybase/
-    CANNOT:          access anything outside easybase/
-                     access network
-                     execute code beyond ctx.py
-                     modify ctx.py, PROTOCOL.md, or config.yaml
-
-### Local-read mode (automatic when you scan for projects)
-
-    CAN read:   paths listed in config.yaml allowed_paths (your scan paths)
-    CAN write:  only inside easybase/
-    CANNOT:     write outside easybase/
-
-### User control
-
-- **config.yaml** — Change storage behavior, search limits, access mode
-- **PROTOCOL.md** — Change how the AI uses the system
-- **soul.md** — Change your user-level context and preferences
-- **logs/changes.log** — Review exactly what the AI stored and when
+- **Sandbox mode (default):** Read/write inside easybase/ only.
+- **Local-read mode (when scanning projects):** Can also read your scan paths. Writes stay inside easybase/.
+- **HTTP server:** Binds to 127.0.0.1 only (localhost). Never accessible from the network.
 
 ## Modified BM25
 
-Standard BM25 (k1=1.5, b=0.75) with two modifications designed for knowledge retrieval.
+Standard BM25 (k1=1.5, b=0.75) with two modifications:
 
-### Scaling Behavior
+- **IDF Floor:** `IDF(t) = max(standard_idf(t), 0.1)` — common domain terms still contribute.
+- **Reference Weight:** `final_score = W(d) x BM25(d, q)` where `W(d) = 1 + log(1 + refs(d))` — foundational chunks get boosted.
 
-Search uses a precomputed inverted index. When a query comes in, the engine only scores chunks that contain the query terms — it never scans the full corpus. As the knowledge base grows, search time stays nearly constant for specific queries because rare terms still appear in only a few chunks.
-
-### IDF Floor for Common Keywords
-
-Common domain terms get an IDF near zero in standard BM25. The IDF floor ensures every matching term contributes at least a small amount:
-
-```
-IDF(t) = max(standard_idf(t), 0.1)
-```
-
-When two chunks match rare terms equally, the one also matching common terms wins.
-
-### Reference Weight for Foundational Chunks
-
-Chunks that many others depend on are foundational knowledge and get a score boost:
-
-```
-final_score = W(d) x BM25(d, q)
-W(d) = 1 + log(1 + refs(d))
-```
-
-## Integration
-
-The output of `ctx.py load` is a text block. Put it before your prompt.
-
-```
-Terminal:     ctx.py load "question" | pbcopy
-Claude Code:  AI calls ctx.py load (soul + protocol auto-included)
-API:          context = subprocess("ctx.py load question")
-MCP server:   expose load() as a tool
-Any chat:     paste the output into the conversation
-```
-
-Every integration gets soul.md and the protocol automatically. No extra setup.
+Search uses a precomputed inverted index. Only scores chunks containing query terms — never scans the full corpus.
 
 ## Requirements
 
-Python 3.6+. Standard library only. No external dependencies.
+- **Core (ctx.py):** Python 3.6+. Standard library only.
+- **MCP server:** Python 3.10+. Requires `pip install mcp`.
+- **HTTP server:** Python 3.6+. Standard library only.
+- **Browser extension:** Chrome, Edge, Brave, or any Chromium browser.
 
 ## License
 

@@ -65,6 +65,21 @@ When you call `ctx.py load`, you receive:
 
 This is the contract: everything relevant is delivered in full. Everything outside the query's scope is present as structure (summaries), not as noise.
 
+## Checking the full inventory (prevents missed information)
+
+Every `ctx.py load` output includes an "All Chunks" section at the bottom.
+This lists EVERY chunk in the knowledge base by ID and summary — not just
+the ones that matched your query. Chunks already loaded are marked with *.
+
+After reading the retrieved chunks, you MUST check the All Chunks list:
+1. Scan every unloaded chunk's summary
+2. If any look relevant to the question, search for them:
+   `ctx.py search "terms from that chunk's summary"`
+3. Do not skip this step — BM25 may miss chunks with different vocabulary
+
+This prevents the systemic error of "didn't think to search for something."
+The full inventory gives you visibility into what BM25 didn't match.
+
 ## Why you must not rely on memory
 
 Your context window is temporary. Between sessions, you remember nothing.
@@ -97,14 +112,27 @@ Ask yourself: if someone searched these exact words, would ONLY this
 chunk be the right result? If the summary could match 10 other chunks,
 it's not specific enough.
 
-### Tags field (search aliases)
+### Tags field (search aliases — CRITICAL for findability)
 
 Tags exist for terms that someone might search but that aren't in
-the summary or body. Think about:
-  - Synonyms: if summary says "authentication", add tag "login"
-  - Abbreviations: if summary says "PostgreSQL", add tag "postgres"
-  - Alternative terms: the user might say "settings" while the chunk
-    says "configuration". Add "settings" as a tag.
+the summary or body. BM25 is keyword-only — if a chunk says "login"
+but the user searches "authentication", it will MISS without tags.
+
+You MUST generate comprehensive synonym tags for every chunk you store:
+
+  - **Synonyms for every key term** — if summary says "authentication",
+    tags MUST include: login, signin, sign-in, auth, sso, credentials
+  - **Abbreviations and expanded forms** — "db" and "database", "API" and
+    "endpoint", "config" and "configuration", "env" and "environment"
+  - **Alternative terms a user might search** — "settings" for "configuration",
+    "crash" for "error", "deploy" for "release", "fix" for "patch"
+  - **Domain-specific aliases** — "k8s" for "kubernetes", "tf" for "terraform",
+    "pg" for "postgresql"
+  - **Action variants** — "setup" and "install" and "configure", "delete"
+    and "remove" and "uninstall"
+
+This costs you almost nothing (a few extra words) but dramatically improves
+search recall. A chunk without good tags is a chunk that will be missed.
 
 ### Body content
 
@@ -150,3 +178,21 @@ projects, run `ctx.py scan` to re-import changed files.
 2. YOU decide what knowledge to extract and how to chunk it
 3. Create chunks via `ctx.py add` following the storage rules above
 4. Update tree summaries
+
+## Tool Names
+
+When using Easybase via MCP server (Claude Desktop, Claude Code, Cursor,
+Windsurf), the commands use these tool names:
+
+| CLI Command | MCP Tool |
+|-------------|----------|
+| `ctx.py load` | `easybase_load` |
+| `ctx.py search` | `easybase_search` |
+| `ctx.py add` | `easybase_add` |
+| `ctx.py respond` | `easybase_respond` |
+| `ctx.py index` | `easybase_index` |
+| `ctx.py stats` | `easybase_stats` |
+
+The protocol loop is the same regardless of how you access Easybase.
+When this protocol says `ctx.py load`, use `easybase_load` if you are
+running as an MCP tool, or `ctx.py load` if running from the terminal.
