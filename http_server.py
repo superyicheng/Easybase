@@ -13,6 +13,8 @@ Endpoints:
     GET  /api/search?query=...&top_k=10&scope=...  Search results (JSON)
     POST /api/add         {id, summary, body, ...}  Create chunk (JSON)
     POST /api/respond     {text}                    Record response (JSON)
+    POST /api/index                                 Rebuild search index (JSON)
+    GET  /api/stats                                 Index statistics (text)
     GET  /api/status                                Health check (JSON)
 """
 
@@ -80,6 +82,10 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                 results = ctx._search_results(query, BASE_DIR, top_k, scope)
                 self._json_response({"results": results})
 
+            elif path == "/api/stats":
+                result = ctx._get_stats(BASE_DIR)
+                self._text_response(result)
+
             elif path == "/api/status":
                 try:
                     index = ctx.load_index(BASE_DIR)
@@ -127,6 +133,10 @@ class EasybaseHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/respond":
                 text = body.get("text", "")
                 result = ctx._record_response(text, BASE_DIR)
+                self._json_response({"ok": True, "message": result})
+
+            elif parsed.path == "/api/index":
+                result = ctx._rebuild_index(BASE_DIR)
                 self._json_response({"ok": True, "message": result})
 
             else:

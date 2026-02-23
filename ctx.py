@@ -610,13 +610,11 @@ def build_index(base_dir="."):
 
     chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
     if not os.path.isdir(chunks_dir):
-        print(f"Error: {chunks_dir} directory not found.")
-        sys.exit(1)
+        raise EasybaseError(f"{chunks_dir} directory not found.")
 
     chunk_files = sorted(f for f in os.listdir(chunks_dir) if f.endswith(".md"))
     if not chunk_files:
-        print("Error: No .md files found in chunks/")
-        sys.exit(1)
+        raise EasybaseError("No .md files found in chunks/")
 
     chunks = {}
     for fname in chunk_files:
@@ -626,8 +624,7 @@ def build_index(base_dir="."):
             chunks[chunk["id"]] = chunk
 
     if not chunks:
-        print("Error: No valid chunks parsed.")
-        sys.exit(1)
+        raise EasybaseError("No valid chunks parsed.")
 
     inverted = defaultdict(lambda: {"df": 0, "postings": {}})
     doc_lengths = {}
@@ -1065,7 +1062,11 @@ def cmd_init(base_dir="."):
 
 def cmd_index(base_dir="."):
     """Build index from chunks."""
-    build_index(base_dir)
+    try:
+        build_index(base_dir)
+    except EasybaseError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 def cmd_search(args, base_dir="."):
@@ -1355,7 +1356,12 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
     # Capture index output
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
-    build_index(base_dir)
+    try:
+        build_index(base_dir)
+    except EasybaseError as e:
+        sys.stdout = old_stdout
+        msgs.append(f"Index warning: {e}")
+        return "\n".join(msgs)
     index_output = sys.stdout.getvalue()
     sys.stdout = old_stdout
     msgs.append(index_output.strip())
@@ -1412,7 +1418,7 @@ def _rebuild_index(base_dir="."):
     sys.stdout = io.StringIO()
     try:
         build_index(base_dir)
-    except SystemExit:
+    except EasybaseError:
         pass
     output = sys.stdout.getvalue()
     sys.stdout = old_stdout

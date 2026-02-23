@@ -18,24 +18,49 @@ Easybase gives AI a structured external memory:
 
 **Every piece of useful information is extracted and delivered to the AI in full. Everything outside the query's scope is abstracted in the tree summaries — present as structure, not as noise.**
 
+### The Flow
+
+Every interaction follows this cycle:
+
+```
+1. User sends a message
+2. AI calls ctx.py load "message" — prompt auto-captured, context returned
+3. AI reasons using ONLY what Easybase returned, searching for sub-topics as needed
+4. AI answers the user
+5. AI calls ctx.py respond "answer" — response auto-captured
+6. AI stores any new knowledge via ctx.py add
+```
+
+The AI never relies on its own memory. Every fact is verified against the knowledge base. Every prompt and response is automatically recorded.
+
 ### Strengths
 
 - **All useful information, nothing else** — Relevant chunks are loaded in full. Everything else is abstracted in tree summaries. Never truncated, never diluted.
-- **User-first context** — soul.md gives the AI your background and preferences before touching any project knowledge.
-- **Zero dependencies** — Single Python file, standard library only.
-- **Works with any AI** — MCP server for Claude/Cursor, browser extension for ChatGPT/Claude.ai/Gemini, CLI for everything else.
+- **User-first context** — soul.md gives the AI your background and preferences before touching any project knowledge. Bring an existing CLAUDE.md or .cursorrules, or create a fresh one.
+- **Zero dependencies** — Single Python file, standard library only. Drop it into any project.
+- **Scales without slowing down** — Search time is proportional to matches, not corpus size. The inverted index never scans the full corpus.
+- **Modified BM25 for knowledge bases** — IDF floor prevents common domain terms from being ignored. Reference weighting boosts foundational chunks automatically.
 - **Synonym-aware search** — Chunks get comprehensive synonym tags. A search for "authentication" finds chunks about "login" too.
 - **Full inventory prevents missed info** — Every load output lists ALL chunks, so the AI can spot what BM25 didn't match.
+- **AI-native design** — Tree summaries give abstract background; chunks give specific detail. The AI bridges vocabulary gaps that pure keyword search can't.
+- **Works with any AI** — MCP server for Claude/Cursor, browser extension for ChatGPT/Claude.ai/Gemini, CLI for everything else.
+- **Works with any domain** — Software, research, documentation, debugging, onboarding — anything that benefits from structured retrieval.
+- **Human-readable storage** — All chunks are plain Markdown. No database, no binary formats. Version control friendly.
 - **Configurable enforcement** — Optional mode where the AI must cite chunk IDs and cannot use its own memory.
-- **Automatic capture** — Every prompt and response is recorded automatically.
-- **Human-readable storage** — All chunks are plain Markdown. No database, no binary formats.
-- **Audit trail** — Every operation logged with timestamps.
+- **Automatic capture** — Every user prompt and AI response is automatically recorded when the AI follows the protocol. No manual recording needed.
+- **Audit trail** — Every operation logged with timestamps to `logs/changes.log`.
 
 ### Tradeoffs
 
-- **Keyword-based, not semantic** — BM25 matches exact terms. Synonym tags reduce this gap significantly, but the retrieval itself is lexical.
-- **Manual chunking** — You (or the AI) write and maintain chunks. Full control over what gets stored.
-- **English-optimized tokenizer** — Stopword list and tokenization rules are designed for English text.
+- **No semantic search** — BM25 matches keywords, not meaning. Searching "how to deploy" won't find a chunk about "CI/CD pipeline" unless it has matching tags. Synonym tags reduce this gap significantly, but you need to write good tags.
+- **Context window cost** — Every load output includes soul.md + protocol + summaries + matched chunks + full inventory. With a large knowledge base this can consume a significant portion of the AI's context window.
+- **Cold start** — An empty knowledge base gives the AI nothing to work with. Value grows only as you (or the AI) add chunks over time.
+- **Manual chunking** — No automatic extraction from documents. You or the AI decide what to store and how to split it. Full control, but requires effort.
+- **Single-user** — No multi-user access, no authentication, no conflict resolution. One person's knowledge base on one machine.
+- **No chunk versioning** — Chunks can be overwritten. The audit log tracks operations but not content diffs.
+- **English-optimized tokenizer** — Stopword list and tokenization rules are designed for English text. Other languages will have suboptimal search.
+- **Browser extension is limited** — In web-based AI chats (ChatGPT, Claude.ai, Gemini), the AI can read injected context but cannot do follow-up searches or add chunks. Full functionality requires MCP (Claude Desktop, Claude Code, Cursor) or CLI.
+- **Fragile web selectors** — The browser extension relies on CSS selectors to find chat input fields. When platforms update their UI, selectors may need updating.
 
 ---
 
@@ -60,7 +85,7 @@ Follow the prompts. Init walks through 4 phases:
 | Method | Best For | What the AI Can Do |
 |--------|----------|-------------------|
 | [MCP Server](#mcp-server) | Claude Desktop, Claude Code, Cursor, Windsurf | Everything — load, search, add, respond, index |
-| [Browser Extension](#browser-extension) | ChatGPT web, Claude.ai web, Gemini web | Load context into chat (inject into input field) |
+| [Browser Extension](#browser-extension) | ChatGPT web, Claude.ai web, Gemini web | Load context, auto-capture responses |
 | [CLI / Terminal](#cli--terminal) | Scripts, pipelines, automation | Everything |
 | [Manual Paste](#manual-paste) | Any AI chat or app | Load context (copy/paste) |
 
@@ -72,6 +97,7 @@ Follow the prompts. Init walks through 4 phases:
 
 The AI calls Easybase tools directly. All functions work automatically —
 load, search, add chunks, record responses, rebuild index, view stats.
+This is the most complete integration — no manual steps required.
 
 ### Install
 
@@ -129,7 +155,7 @@ Add to MCP settings with the same command/args/env pattern as Claude Desktop.
 
 **For: ChatGPT (web), Claude.ai (web), Gemini (web), and any browser-based AI chat.**
 
-Adds a floating "EB" button to supported AI chat pages. Click it, enter your query, and Easybase context is injected directly into the chat input field.
+Adds a floating "EB" button to supported AI chat pages. Click it, enter your query, and Easybase context is injected directly into the chat input field. AI responses are automatically captured.
 
 ### Install
 
@@ -160,14 +186,16 @@ This starts a local-only server at `http://127.0.0.1:8372`. It never leaves your
 ### What works with the extension
 
 - Loading full context (soul.md + protocol + matched chunks + full inventory) into any supported web AI chat
+- Auto-capture of AI responses — sent to the server automatically after the AI finishes responding
 - The AI reads the injected context and follows the Easybase protocol
 - Server status shown in extension popup (green = connected)
 
 ### What doesn't work with the extension
 
 - The AI cannot call Easybase tools directly (it reads injected text, not tool calls)
-- `respond` and `add` must be done via CLI — the extension is read-only
-- No automatic capture of AI responses
+- Follow-up searches must be done via CLI — the AI in web chat cannot call search
+- Adding chunks must be done via CLI
+- For full automation, use MCP instead
 
 ### Custom server port
 

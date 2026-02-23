@@ -17,6 +17,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleSearch(message.query).then(sendResponse);
     return true;
   }
+  if (message.action === "respond") {
+    handleRespond(message.text).then(sendResponse);
+    return true;
+  }
   if (message.action === "status") {
     handleStatus().then(sendResponse);
     return true;
@@ -45,6 +49,20 @@ async function handleSearch(query) {
     const url = await getServerUrl();
     const params = new URLSearchParams({ query });
     const resp = await fetch(`${url}/api/search?${params}`);
+    return await resp.json();
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function handleRespond(text) {
+  try {
+    const url = await getServerUrl();
+    const resp = await fetch(`${url}/api/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
     return await resp.json();
   } catch (e) {
     return { error: e.message };

@@ -1,6 +1,7 @@
 // Easybase Browser Extension — Content Script
 // Injected into AI chat pages (ChatGPT, Claude.ai, Gemini).
 // Adds a floating button that loads and injects Easybase context.
+// Auto-captures AI responses and sends them to the local server.
 
 (function () {
   "use strict";
@@ -75,6 +76,114 @@
 
   const platform = detectPlatform();
   if (!platform) return;
+
+  // --- Auto-capture: detect AI responses ---
+
+  // Track whether we injected context (only capture responses after injection)
+  let contextInjected = false;
+  // Track captured responses to avoid duplicates
+  let lastCapturedText = "";
+  // Debounce timer for response completion detection
+  let captureTimer = null;
+
+  // Selectors for AI response messages on each platform
+  function getResponseSelectors(platform) {
+    return {
+      chatgpt: {
+        // ChatGPT: assistant messages contain markdown content
+        container: '[data-message-author-role="assistant"]',
+        content: ".markdown",
+        // The streaming indicator (stop button visible = still streaming)
+        streaming: 'button[aria-label="Stop streaming"]',
+      },
+      claude: {
+        // Claude.ai: assistant messages
+        container: '[data-is-streaming]',
+        content: ".font-claude-message",
+        streaming: '[data-is-streaming="true"]',
+      },
+      gemini: {
+        // Gemini: model response turns
+        container: "model-response",
+        content: ".model-response-text",
+        streaming: ".loading-indicator",
+      },
+    }[platform];
+  }
+
+  // Extract the last AI response text
+  function getLastResponseText() {
+    const sel = getResponseSelectors(platform);
+    if (!sel) return null;
+
+    const messages = document.querySelectorAll(sel.container);
+    if (messages.length === 0) return null;
+
+    const lastMsg = messages[messages.length - 1];
+    const contentEl = sel.content
+      ? lastMsg.querySelector(sel.content) || lastMsg
+      : lastMsg;
+
+    return contentEl.textContent?.trim() || null;
+  }
+
+  // Check if the AI is still streaming
+  function isStreaming() {
+    const sel = getResponseSelectors(platform);
+    if (!sel || !sel.streaming) return false;
+    return document.querySelector(sel.streaming) !== null;
+  }
+
+  // Send captured response to server
+  function captureResponse(text) {
+    if (!text || text === lastCapturedText || text.length < 10) return;
+    lastCapturedText = text;
+
+    chrome.runtime.sendMessage(
+      { action: "respond", text: text },
+      (response) => {
+        if (chrome.runtime.lastError) return;
+        // Silent capture — no UI feedback needed
+      }
+    );
+  }
+
+  // Attempt to capture after streaming stops
+  function tryCapture() {
+    if (!contextInjected) return;
+    if (isStreaming()) {
+      // Still streaming, check again later
+      clearTimeout(captureTimer);
+      captureTimer = setTimeout(tryCapture, 1000);
+      return;
+    }
+
+    const text = getLastResponseText();
+    if (text) {
+      captureResponse(text);
+    }
+  }
+
+  // Set up MutationObserver to watch for new AI responses
+  function startResponseObserver() {
+    const observer = new MutationObserver((mutations) => {
+      if (!contextInjected) return;
+
+      // When DOM changes, debounce and check for completed response
+      clearTimeout(captureTimer);
+      captureTimer = setTimeout(tryCapture, 2000);
+    });
+
+    // Observe the main chat area for child changes
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  startResponseObserver();
+
+  // --- UI: Floating button and panel ---
 
   // Create floating button
   const btn = document.createElement("div");
@@ -166,6 +275,9 @@
             setInputText(input, combined);
             msgEl.textContent = "Context injected into chat input.";
             msgEl.className = "eb-message eb-success";
+            // Mark context as injected — enable auto-capture
+            contextInjected = true;
+            lastCapturedText = "";
             // Close panel after success
             setTimeout(() => {
               panelOpen = false;
