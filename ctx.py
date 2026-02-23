@@ -845,13 +845,9 @@ def cmd_init(base_dir="."):
     print("==============")
     print()
 
-    # --- Phase 1: Identity ---
-    print("Phase 1: Identity")
+    # --- Phase 1: User Profile ---
+    print("Phase 1: User Profile")
     print("-" * 30)
-    owner = input("Your name: ").strip()
-    owner_role = input("Your role (e.g., developer, researcher, student): ").strip()
-
-    print()
     print("Easybase uses a soul.md file for your general context (preferences,")
     print("background, how the AI should work with you). This is loaded first,")
     print("before any project-specific knowledge.")
@@ -865,16 +861,20 @@ def cmd_init(base_dir="."):
     if soul_choice == "2":
         existing_path = input("Path to your existing file: ").strip()
         existing_path = os.path.expanduser(existing_path)
-        if os.path.exists(existing_path):
+        if not os.path.exists(existing_path):
+            print(f"  File not found: {existing_path}")
+            print(f"  Creating a blank {SOUL_FILE} instead.")
+            _create_default_soul(soul_path)
+        elif os.path.isdir(existing_path):
+            print(f"  {existing_path} is a directory, not a file.")
+            print(f"  Creating a blank {SOUL_FILE} instead.")
+            _create_default_soul(soul_path)
+        else:
             with open(existing_path, 'r', encoding='utf-8') as f:
                 existing_content = f.read()
             with open(soul_path, 'w', encoding='utf-8') as f:
                 f.write(existing_content)
             print(f"  Imported {existing_path} \u2192 {SOUL_FILE}")
-        else:
-            print(f"  File not found: {existing_path}")
-            print(f"  Creating a blank {SOUL_FILE} instead.")
-            _create_default_soul(soul_path)
     else:
         _create_default_soul(soul_path)
 
@@ -1005,8 +1005,7 @@ def cmd_init(base_dir="."):
     config = _default_config(
         name=name, description=description, storage_mode=storage_mode,
         access_mode=access_mode, max_top_k=max_top_k,
-        owner=owner, owner_role=owner_role, scan_paths=scan_paths,
-        enforcement=enforcement,
+        scan_paths=scan_paths, enforcement=enforcement,
     )
     config_path = os.path.join(base_dir, CONFIG_FILE)
     with open(config_path, 'w', encoding='utf-8') as f:

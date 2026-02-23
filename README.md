@@ -1,6 +1,10 @@
-# Easybase
+<p align="center">
+  <img src="logo.png" alt="Easybase" width="120">
+</p>
 
-A BM25-based context management system that helps AI work with large knowledge bases across sessions. Store knowledge as small chunks, maintain a structural overview, and retrieve only what's relevant.
+<h1 align="center">Easybase</h1>
+
+<p align="center">A BM25-based context management system that helps AI work with large knowledge bases across sessions.<br>Store knowledge as small chunks, maintain a structural overview, and retrieve only what's relevant.</p>
 
 ---
 
@@ -29,13 +33,13 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 ## Setup
 
 ```bash
-git clone <repo> easybase
-cd easybase
+git clone https://github.com/YichengLi/Easybase.git
+cd Easybase
 python3 ctx.py init
 ```
 
 Init walks you through 4 steps:
-1. **Identity** — your name, role, user profile
+1. **User Profile** — set up soul.md (your preferences, background, context for the AI)
 2. **Knowledge Base** — name, storage settings
 3. **Project Discovery** — optionally scan your machine for existing projects to import
 4. **Confirmation** — shows where your data will be stored
