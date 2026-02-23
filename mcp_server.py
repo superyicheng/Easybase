@@ -5,21 +5,23 @@ Usage:
     pip install mcp
     python3 mcp_server.py
 
+Data defaults to ~/.easybase. Override with EASYBASE_DIR env var.
+
 Configure in Claude Desktop (claude_desktop_config.json):
     {
         "mcpServers": {
             "easybase": {
                 "command": "python3",
-                "args": ["/path/to/easybase/mcp_server.py"],
-                "env": {"EASYBASE_DIR": "/path/to/easybase"}
+                "args": ["/path/to/Easybase/mcp_server.py"],
+                "env": {"EASYBASE_DIR": "~/.easybase"}
             }
         }
     }
 
 Configure in Claude Code:
-    claude mcp add --transport stdio easybase \\
-        -e EASYBASE_DIR=/path/to/easybase \\
-        -- python3 /path/to/easybase/mcp_server.py
+    claude mcp add --scope user --transport stdio easybase \\
+        -e EASYBASE_DIR=~/.easybase \\
+        -- python3 /path/to/Easybase/mcp_server.py
 """
 
 import os
@@ -37,7 +39,7 @@ mcp = FastMCP("easybase", instructions=(
     "responding to the user's first message."
 ))
 
-BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.expanduser("~/.easybase"))
 
 
 @mcp.tool()

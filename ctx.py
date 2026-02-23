@@ -27,6 +27,16 @@ BANNER = r"""
               |__/
 """
 
+DEFAULT_DATA_DIR = os.path.expanduser("~/.easybase")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _resolve_base_dir(base_dir=None):
+    """Resolve the data directory. Priority: explicit arg > EASYBASE_DIR env > ~/.easybase"""
+    if base_dir is not None:
+        return base_dir
+    return os.environ.get("EASYBASE_DIR", DEFAULT_DATA_DIR)
+
 # --- Defaults ---
 
 CHUNKS_DIR = "chunks"
@@ -237,8 +247,9 @@ def _default_config(storage_mode="all", access_mode="sandbox",
     }
 
 
-def load_config(base_dir="."):
+def load_config(base_dir=None):
     """Load config.yaml, falling back to defaults."""
+    base_dir = _resolve_base_dir(base_dir)
     config_path = os.path.join(base_dir, CONFIG_FILE)
     if not os.path.exists(config_path):
         return _default_config()
@@ -264,8 +275,9 @@ def load_config(base_dir="."):
 
 # --- Logging ---
 
-def log_change(message, base_dir="."):
+def log_change(message, base_dir=None):
     """Append a line to the audit log."""
+    base_dir = _resolve_base_dir(base_dir)
     log_path = os.path.join(base_dir, CHANGES_LOG)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -386,8 +398,9 @@ def _sanitize_id(name):
     return sanitized[:30] if sanitized else "unknown"
 
 
-def _import_project_file(project, base_dir="."):
+def _import_project_file(project, base_dir=None):
     """Import a found project's files as chunks."""
+    base_dir = _resolve_base_dir(base_dir)
     proj_name = project["name"]
     safe_name = _sanitize_id(proj_name)
     chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
@@ -476,8 +489,9 @@ def _import_project_file(project, base_dir="."):
     return imported
 
 
-def _import_projects(projects, base_dir="."):
+def _import_projects(projects, base_dir=None):
     """Import multiple projects and save registry."""
+    base_dir = _resolve_base_dir(base_dir)
     all_imported = []
 
     for proj in projects:
@@ -517,8 +531,9 @@ def _import_projects(projects, base_dir="."):
     return all_imported
 
 
-def _load_projects_registry(base_dir="."):
+def _load_projects_registry(base_dir=None):
     """Load projects.json registry."""
+    base_dir = _resolve_base_dir(base_dir)
     path = os.path.join(base_dir, PROJECTS_FILE)
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
@@ -526,8 +541,9 @@ def _load_projects_registry(base_dir="."):
     return {}
 
 
-def _save_projects_registry(registry, base_dir="."):
+def _save_projects_registry(registry, base_dir=None):
     """Save projects.json registry."""
+    base_dir = _resolve_base_dir(base_dir)
     path = os.path.join(base_dir, PROJECTS_FILE)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(registry, f, indent=2)
@@ -628,8 +644,9 @@ def parse_chunk(filepath):
 
 # --- Index Builder ---
 
-def build_index(base_dir="."):
+def build_index(base_dir=None):
     """Build BM25 inverted index from all chunks."""
+    base_dir = _resolve_base_dir(base_dir)
     config = load_config(base_dir)
     k1 = config["search"]["bm25_k1"]
     b = config["search"]["bm25_b"]
@@ -761,8 +778,9 @@ def _generate_root_summary(chunks, summary_path):
 
 # --- Search ---
 
-def load_index(base_dir="."):
+def load_index(base_dir=None):
     """Load the precomputed index."""
+    base_dir = _resolve_base_dir(base_dir)
     index_path = os.path.join(base_dir, INDEX_FILE)
     if not os.path.exists(index_path):
         raise EasybaseError(f"Error: {INDEX_FILE} not found. Run 'python3 ctx.py index' first.")
@@ -901,14 +919,25 @@ def _create_default_permission(permission_path):
         f.write('\n'.join(lines))
 
 
-def cmd_init(base_dir="."):
+def cmd_init(base_dir=None):
     """Interactive setup — generates config.yaml and directory structure."""
+    if base_dir is None:
+        base_dir = os.environ.get("EASYBASE_DIR", DEFAULT_DATA_DIR)
     abs_base = os.path.abspath(base_dir)
+    os.makedirs(abs_base, exist_ok=True)
 
     print(BANNER)
     print("  Setup")
     print("  " + "=" * 30)
     print()
+    print(f"  Data directory: {abs_base}")
+    print()
+
+    # Copy PROTOCOL.md from source code to data dir
+    src_protocol = os.path.join(SCRIPT_DIR, PROTOCOL_FILE)
+    dst_protocol = os.path.join(abs_base, PROTOCOL_FILE)
+    if os.path.exists(src_protocol):
+        shutil.copy2(src_protocol, dst_protocol)
 
     # --- Phase 1: User Profile ---
     print("Phase 1: User Profile")
@@ -974,8 +1003,8 @@ def cmd_init(base_dir="."):
     print("-" * 30)
     print("Easybase can scan directories on your machine for existing projects")
     print("by looking for AI context files (CLAUDE.md, .cursorrules, README.md, etc.).")
-    print("You can import multiple projects at once — each becomes searchable chunks.")
-    print("You can also add more projects later with: python3 ctx.py scan")
+    print("File contents are COPIED into Easybase's data directory as searchable chunks.")
+    print("Original files are never modified. You can add more projects later with: python3 ctx.py scan")
     print()
     print("Should Easybase scan for existing projects?")
     print("  [1] No \u2014 skip for now")
@@ -1076,7 +1105,7 @@ def cmd_init(base_dir="."):
     # Import projects if any were selected
     if imported_projects:
         print()
-        print("Importing projects...")
+        print(f"Copying project files into {abs_base}/chunks/ as searchable knowledge...")
         all_imported = _import_projects(imported_projects, base_dir)
         print(f"  Imported {len(all_imported)} chunk(s) from {len(imported_projects)} project(s).")
 
@@ -1087,7 +1116,7 @@ def cmd_init(base_dir="."):
     print("Phase 4: Connect to your AI tool")
     print("-" * 30)
 
-    mcp_server_path = os.path.join(abs_base, "mcp_server.py")
+    mcp_server_path = os.path.join(SCRIPT_DIR, "mcp_server.py")
 
     # Check if mcp is installed
     mcp_installed = False
@@ -1101,14 +1130,20 @@ def cmd_init(base_dir="."):
     if not mcp_installed:
         print("Installing mcp package...")
         import subprocess
+        pip_cmd = [sys.executable, "-m", "pip", "install"]
+        # Use --user if not in a virtual environment to avoid polluting global Python
+        in_venv = (hasattr(sys, 'real_prefix') or
+                   (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix))
+        if not in_venv:
+            pip_cmd.append("--user")
+        pip_cmd.append("mcp")
         try:
-            subprocess.run([sys.executable, "-m", "pip", "install", "mcp"],
-                           capture_output=True, check=True)
+            subprocess.run(pip_cmd, capture_output=True, check=True)
             print("  mcp installed.")
             mcp_installed = True
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("  Could not install mcp automatically.")
-            print("  Please run: pip install mcp")
+            print("  Please run: pip install --user mcp")
 
     # Detect and auto-register with Claude Code
     has_claude = shutil.which("claude") is not None
@@ -1120,7 +1155,8 @@ def cmd_init(base_dir="."):
         import subprocess
         try:
             subprocess.run([
-                "claude", "mcp", "add", "--transport", "stdio", "easybase",
+                "claude", "mcp", "add", "--scope", "user",
+                "--transport", "stdio", "easybase",
                 "-e", f"EASYBASE_DIR={abs_base}",
                 "--", sys.executable, mcp_server_path,
             ], capture_output=True, check=True)
@@ -1130,7 +1166,7 @@ def cmd_init(base_dir="."):
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"  Auto-registration failed: {e}")
             print(f"  Run manually:")
-            print(f"    claude mcp add --transport stdio easybase \\")
+            print(f"    claude mcp add --scope user --transport stdio easybase \\")
             print(f"      -e EASYBASE_DIR={abs_base} \\")
             print(f"      -- python3 {mcp_server_path}")
 
@@ -1166,8 +1202,9 @@ def cmd_init(base_dir="."):
     print("  Edit permission.md to set what the AI can access and run.")
 
 
-def cmd_index(base_dir="."):
+def cmd_index(base_dir=None):
     """Build index from chunks."""
+    base_dir = _resolve_base_dir(base_dir)
     try:
         build_index(base_dir)
     except EasybaseError as e:
@@ -1175,8 +1212,9 @@ def cmd_index(base_dir="."):
         sys.exit(1)
 
 
-def cmd_search(args, base_dir="."):
+def cmd_search(args, base_dir=None):
     """Search for chunks by query."""
+    base_dir = _resolve_base_dir(base_dir)
     if not args:
         print('Usage: python3 ctx.py search "query" [--top N] [--scope path] [-v]')
         sys.exit(1)
@@ -1216,8 +1254,9 @@ def cmd_search(args, base_dir="."):
         print(f"{rank:<6}{r['id']:<12}{r['score']:<10}{r['summary']}")
 
 
-def _auto_capture(content, msg_type, base_dir="."):
+def _auto_capture(content, msg_type, base_dir=None):
     """Automatically capture a query or response to inbox/sessions/."""
+    base_dir = _resolve_base_dir(base_dir)
     sessions_dir = os.path.join(base_dir, INBOX_DIR, "sessions")
     os.makedirs(sessions_dir, exist_ok=True)
 
@@ -1241,8 +1280,9 @@ def _auto_capture(content, msg_type, base_dir="."):
     log_change(f"CAPTURE {msg_type}:{filename}", base_dir)
 
 
-def _check_project_freshness(base_dir="."):
+def _check_project_freshness(base_dir=None):
     """Check if any imported project files have changed since import."""
+    base_dir = _resolve_base_dir(base_dir)
     registry = _load_projects_registry(base_dir)
     if not registry:
         return []
@@ -1270,8 +1310,9 @@ def _check_project_freshness(base_dir="."):
 
 # --- Internal API (used by MCP and HTTP servers) ---
 
-def _load_context(query, base_dir=".", top_k=None, scope=None):
+def _load_context(query, base_dir=None, top_k=None, scope=None):
     """Build and return the full context block as a string."""
+    base_dir = _resolve_base_dir(base_dir)
     config = load_config(base_dir)
 
     # Auto-capture the user's query
@@ -1397,15 +1438,17 @@ def _load_context(query, base_dir=".", top_k=None, scope=None):
     return out.getvalue()
 
 
-def _search_results(query, base_dir=".", top_k=None, scope=None):
+def _search_results(query, base_dir=None, top_k=None, scope=None):
     """Search and return list of result dicts."""
+    base_dir = _resolve_base_dir(base_dir)
     index = load_index(base_dir)
     return search(query, index, top_k=top_k, scope=scope)
 
 
 def _add_chunk(chunk_id, summary, body="", domain="", tags="",
-               depends="", tree_path="", base_dir="."):
+               depends="", tree_path="", base_dir=None):
     """Create a chunk file, symlink, rebuild index. Returns status message."""
+    base_dir = _resolve_base_dir(base_dir)
     if not chunk_id or not summary:
         raise EasybaseError("--id and --summary are required.")
 
@@ -1477,8 +1520,9 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
     return "\n".join(msgs)
 
 
-def _record_response(content, base_dir="."):
+def _record_response(content, base_dir=None):
     """Record AI response with enforcement check. Returns status message."""
+    base_dir = _resolve_base_dir(base_dir)
     if not content or not content.strip():
         raise EasybaseError("No content to record.")
 
@@ -1520,8 +1564,9 @@ def _record_response(content, base_dir="."):
     return "Response recorded."
 
 
-def _rebuild_index(base_dir="."):
+def _rebuild_index(base_dir=None):
     """Rebuild index and return status message."""
+    base_dir = _resolve_base_dir(base_dir)
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
     try:
@@ -1533,8 +1578,9 @@ def _rebuild_index(base_dir="."):
     return output.strip()
 
 
-def _get_stats(base_dir="."):
+def _get_stats(base_dir=None):
     """Return stats as a string."""
+    base_dir = _resolve_base_dir(base_dir)
     index = load_index(base_dir)
 
     N = index["N"]
@@ -1599,8 +1645,9 @@ def _get_stats(base_dir="."):
     return out.getvalue().rstrip()
 
 
-def _ingest_files(base_dir="."):
+def _ingest_files(base_dir=None):
     """Process inbox files and return their contents as a string."""
+    base_dir = _resolve_base_dir(base_dir)
     inbox_sessions = os.path.join(base_dir, INBOX_DIR, "sessions")
     inbox_files = os.path.join(base_dir, INBOX_DIR, "files")
     processed_dir = os.path.join(base_dir, INBOX_DIR, "processed")
@@ -1647,8 +1694,9 @@ def _ingest_files(base_dir="."):
     return out.getvalue()
 
 
-def _scan_projects(paths=None, base_dir="."):
+def _scan_projects(paths=None, base_dir=None):
     """Scan for projects and import all new ones. Returns status message."""
+    base_dir = _resolve_base_dir(base_dir)
     abs_base = os.path.abspath(base_dir)
     config = load_config(base_dir)
 
@@ -1672,7 +1720,7 @@ def _scan_projects(paths=None, base_dir="."):
     return "\n".join(lines)
 
 
-def _add_permission(project, permission_type, value, base_dir="."):
+def _add_permission(project, permission_type, value, base_dir=None):
     """Add a permanent permission for a project (or global).
 
     Args:
@@ -1684,6 +1732,7 @@ def _add_permission(project, permission_type, value, base_dir="."):
     Returns:
         Confirmation message string
     """
+    base_dir = _resolve_base_dir(base_dir)
     permission_path = os.path.join(base_dir, PERMISSION_FILE)
     if not os.path.exists(permission_path):
         _create_default_permission(permission_path)
@@ -1790,8 +1839,9 @@ def _add_permission(project, permission_type, value, base_dir="."):
     return f"Recorded permanent permission for {scope}: {section_heading} \u2014 {value}"
 
 
-def _check_integrity(base_dir="."):
+def _check_integrity(base_dir=None):
     """Validate system integrity and return report string."""
+    base_dir = _resolve_base_dir(base_dir)
     issues = []
 
     config_path = os.path.join(base_dir, CONFIG_FILE)
@@ -1893,8 +1943,9 @@ def _check_integrity(base_dir="."):
 
 # --- CLI Commands (thin wrappers) ---
 
-def cmd_load(args, base_dir="."):
+def cmd_load(args, base_dir=None):
     """Search + display full context block with protocol."""
+    base_dir = _resolve_base_dir(base_dir)
     if not args:
         print('Usage: python3 ctx.py load "query" [--top N] [--scope path]')
         sys.exit(1)
@@ -1931,8 +1982,9 @@ def _format_all_chunks(index, matched_ids):
     return "\n".join(lines)
 
 
-def _format_stale_projects(base_dir="."):
+def _format_stale_projects(base_dir=None):
     """Format stale project warnings if any."""
+    base_dir = _resolve_base_dir(base_dir)
     stale = _check_project_freshness(base_dir)
     if not stale:
         return ""
@@ -1944,8 +1996,9 @@ def _format_stale_projects(base_dir="."):
     return "\n".join(lines)
 
 
-def cmd_add(args, base_dir="."):
+def cmd_add(args, base_dir=None):
     """Add a new chunk file and rebuild index."""
+    base_dir = _resolve_base_dir(base_dir)
     chunk_id = ""
     summary = ""
     body = ""
@@ -1994,26 +2047,30 @@ def cmd_add(args, base_dir="."):
         sys.exit(1)
 
 
-def cmd_ingest(base_dir="."):
+def cmd_ingest(base_dir=None):
     """Process files in inbox/ for AI review."""
+    base_dir = _resolve_base_dir(base_dir)
     print(_ingest_files(base_dir))
 
 
-def cmd_stats(base_dir="."):
+def cmd_stats(base_dir=None):
     """Show index and tree statistics."""
+    base_dir = _resolve_base_dir(base_dir)
     print(_get_stats(base_dir))
 
 
-def cmd_check(base_dir="."):
+def cmd_check(base_dir=None):
     """Validate system integrity."""
+    base_dir = _resolve_base_dir(base_dir)
     result = _check_integrity(base_dir)
     print(result)
     if "issue(s) found" in result:
         sys.exit(1)
 
 
-def cmd_permit(args, base_dir="."):
+def cmd_permit(args, base_dir=None):
     """Record a permanent permission."""
+    base_dir = _resolve_base_dir(base_dir)
     if not args or len(args) < 3:
         print('Usage: python3 ctx.py permit --project "name" --type allow_dir --value "/path"')
         print('       python3 ctx.py permit --project global --type allow_cmd --value "git"')
@@ -2051,8 +2108,9 @@ def cmd_permit(args, base_dir="."):
         sys.exit(1)
 
 
-def cmd_record(args, base_dir="."):
+def cmd_record(args, base_dir=None):
     """Record session content into inbox for later processing."""
+    base_dir = _resolve_base_dir(base_dir)
     content = None
 
     i = 0
@@ -2099,8 +2157,9 @@ def cmd_record(args, base_dir="."):
     print(f"Recorded session: {filepath}")
 
 
-def cmd_respond(args, base_dir="."):
+def cmd_respond(args, base_dir=None):
     """Record AI response — called after answering the user."""
+    base_dir = _resolve_base_dir(base_dir)
     content = None
 
     i = 0
@@ -2135,8 +2194,9 @@ def cmd_respond(args, base_dir="."):
         sys.exit(1)
 
 
-def cmd_scan(args, base_dir="."):
+def cmd_scan(args, base_dir=None):
     """Re-scan for projects after initial setup."""
+    base_dir = _resolve_base_dir(base_dir)
     abs_base = os.path.abspath(base_dir)
     config = load_config(base_dir)
 
@@ -2175,7 +2235,7 @@ def cmd_scan(args, base_dir="."):
         print(f"      Files: {files_str}")
 
     print()
-    print("Import which projects?")
+    print("Import which projects? (file contents will be COPIED into Easybase)")
     print("  [a] All")
     print("  [n] None")
     print("  Or enter numbers separated by commas (e.g., 1,3,5)")
@@ -2191,7 +2251,7 @@ def cmd_scan(args, base_dir="."):
         except (ValueError, IndexError):
             print("  Invalid selection, importing all.")
 
-    print("Importing...")
+    print(f"Copying project files into {abs_base}/chunks/ as searchable knowledge...")
     all_imported = _import_projects(new_projects, base_dir)
     print(f"Imported {len(all_imported)} chunk(s) from {len(new_projects)} project(s).")
 

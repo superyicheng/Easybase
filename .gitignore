@@ -1,7 +1,19 @@
+# Generated data (normally lives in ~/.easybase, but ignore if created locally)
+chunks/
+knowledge/
+inbox/
+logs/
 index.json
 projects.json
-logs/
-inbox/processed/
+config.yaml
+soul.md
+permission.md
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# OS
 .DS_Store
+Thumbs.db

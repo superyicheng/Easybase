@@ -32,7 +32,7 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ctx
 
-BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.expanduser("~/.easybase"))
 PORT = int(os.environ.get("EASYBASE_PORT", "8372"))
 
 

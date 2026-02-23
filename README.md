@@ -48,20 +48,21 @@ Available MCP tools: `easybase_load`, `easybase_search`, `easybase_add`, `easyba
 
 ### Where your data lives
 
-All data is stored inside the Easybase directory you cloned:
+All data is stored in `~/.easybase/` — separate from the code you cloned:
 
-| Directory | Contents |
-|-----------|----------|
-| `chunks/` | Knowledge chunks (flat Markdown files, searched by BM25) |
-| `knowledge/` | Tree structure with summaries at each level |
-| `inbox/sessions/` | Auto-captured queries and responses |
-| `logs/changes.log` | Audit trail of all operations |
-| `soul.md` | Your user profile (loaded first every session) |
-| `permission.md` | AI access rules — per-project allowed directories and commands |
-| `config.yaml` | All settings |
-| `index.json` | Search index (regenerated automatically) |
+| Path | Contents |
+|------|----------|
+| `~/.easybase/chunks/` | Knowledge chunks (flat Markdown files, searched by BM25) |
+| `~/.easybase/knowledge/` | Tree structure with summaries at each level |
+| `~/.easybase/inbox/sessions/` | Auto-captured queries and responses |
+| `~/.easybase/logs/changes.log` | Audit trail of all operations |
+| `~/.easybase/soul.md` | Your user profile (loaded first every session) |
+| `~/.easybase/permission.md` | AI access rules — per-project allowed directories and commands |
+| `~/.easybase/config.yaml` | All settings |
+| `~/.easybase/index.json` | Search index (regenerated automatically) |
 
-To use a different location, set `EASYBASE_DIR` to point to your data directory.
+The git clone contains only code — no personal data, no conflicts on `git pull`.
+To use a different data location, set `EASYBASE_DIR` to point to your data directory.
 
 ---
 
@@ -97,18 +98,25 @@ python3 http_server.py
 
 ## Project Structure
 
+**Code** (git clone):
 ```
-easybase/
+Easybase/
 ├── ctx.py              Core engine (Python stdlib only)
 ├── mcp_server.py       MCP server (requires: pip install mcp)
 ├── http_server.py      HTTP server for browser extension (stdlib only)
-├── PROTOCOL.md         AI instructions (auto-included in every load)
+├── PROTOCOL.md         AI instructions (copied to data dir during init)
 ├── extension/          Browser extension (Chrome Manifest V3)
-├── soul.md             User profile (generated during init)
-├── permission.md       AI access rules (generated during init)
-├── config.yaml         Settings (generated during init)
-├── knowledge/          Knowledge tree with summaries
+└── test_ctx.py         Tests
+```
+
+**Data** (`~/.easybase/`):
+```
+~/.easybase/
+├── soul.md             User profile
+├── permission.md       AI access rules
+├── config.yaml         Settings
 ├── chunks/             Flat chunk storage for BM25
+├── knowledge/          Knowledge tree with summaries
 ├── inbox/              Auto-captured sessions
 ├── logs/               Audit trail
 └── index.json          BM25 search index
@@ -124,7 +132,7 @@ Standard BM25 (k1=1.5, b=0.75) with two modifications:
 ## Requirements
 
 - **Core (ctx.py):** Python 3.6+. Standard library only.
-- **MCP server:** Python 3.10+. Requires `pip install mcp`.
+- **MCP server:** Python 3.10+. Requires `mcp` package (auto-installed during init).
 - **HTTP server:** Python 3.6+. Standard library only.
 - **Browser extension:** Chrome, Edge, Brave, or any Chromium browser.
 
