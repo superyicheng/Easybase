@@ -157,6 +157,22 @@ def easybase_scan(paths: str = "") -> str:
 
 
 @mcp.tool()
+def easybase_permit(project: str, permission_type: str, value: str) -> str:
+    """Record a permanent permission for a project. Call this when the user says
+    "allow forever", "always allow", or grants a persistent permission.
+
+    Args:
+        project: Project name, or "global" for permissions that apply everywhere
+        permission_type: One of: allow_dir, readonly_dir, block_dir, allow_cmd, block_cmd
+        value: The directory path or command (e.g. "/Users/me/project", "git", "npm test")
+    """
+    try:
+        return ctx._add_permission(project, permission_type, value, BASE_DIR)
+    except ctx.EasybaseError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
 def easybase_check() -> str:
     """Validate system integrity — check chunks, index, symlinks, config."""
     try:

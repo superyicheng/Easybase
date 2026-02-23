@@ -183,6 +183,34 @@ projects, run `ctx.py scan` to re-import changed files.
 3. Create chunks via `add` following the storage rules above
 4. Update tree summaries
 
+## Permissions — checking before asking
+
+Every `ctx.py load` output includes the contents of `permission.md`.
+This file records what the user has permanently allowed or blocked,
+both globally and per project.
+
+Before asking the user for permission to access a directory or run
+a command, you MUST check permission.md:
+- If the action is listed under **Allowed Directories** or **Allowed Commands**
+  (globally or for this project), proceed without asking.
+- If it is listed under **Blocked Directories** or **Blocked Commands**, refuse.
+- If it is not listed, ask the user.
+
+When you ask and the user grants permission, offer two options:
+1. Allow for this session only (do nothing, just proceed)
+2. **Allow forever for this project** — call `ctx.py permit` (or
+   `easybase_permit`) to record it in permission.md:
+   ```
+   ctx.py permit --project "project-name" --type allow_dir --value "/path"
+   ctx.py permit --project "project-name" --type allow_cmd --value "npm test"
+   ctx.py permit --project global --type allow_cmd --value "git"
+   ```
+
+Permission types: `allow_dir`, `readonly_dir`, `block_dir`, `allow_cmd`, `block_cmd`
+
+This eliminates repetitive permission prompts across sessions. Once the user
+says "always allow", it is recorded and never asked again.
+
 ## Your responsibility
 
 You are responsible for all knowledge management:
@@ -191,6 +219,7 @@ You are responsible for all knowledge management:
 - Updating tree summaries when understanding changes
 - Checking the full inventory to avoid missing relevant information
 - Running `ingest` to process inbox files and extract knowledge from them
+- Recording permanent permissions when the user grants them
 
 The user should never have to create or manage chunks manually.
 
@@ -209,6 +238,7 @@ When using Easybase via MCP server, the commands use these tool names:
 | `ctx.py ingest` | `easybase_ingest` |
 | `ctx.py scan` | `easybase_scan` |
 | `ctx.py check` | `easybase_check` |
+| `ctx.py permit` | `easybase_permit` |
 
 The protocol loop is the same regardless of how you access Easybase.
 When this protocol says `ctx.py load`, use `easybase_load` if you are

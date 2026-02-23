@@ -37,6 +37,7 @@ INDEX_FILE = "index.json"
 CONFIG_FILE = "config.yaml"
 PROTOCOL_FILE = "PROTOCOL.md"
 SOUL_FILE = "soul.md"
+PERMISSION_FILE = "permission.md"
 CHANGES_LOG = "logs/changes.log"
 PROJECTS_FILE = "projects.json"
 
@@ -347,6 +348,37 @@ def _basic_auto_tags(text, max_tags=10):
     return [term for term, _ in sorted_terms[:max_tags]]
 
 
+def _extract_summary(body, proj_name, filename):
+    """Extract a meaningful summary from file content.
+
+    Tries to find: first markdown heading, then first non-empty paragraph.
+    Falls back to 'ProjectName — filename' if nothing useful is found.
+    """
+    fallback = f"{proj_name} \u2014 {filename}"
+
+    # Try to extract the first markdown heading
+    heading_match = re.search(r'^#{1,3}\s+(.+)', body, re.MULTILINE)
+    heading = heading_match.group(1).strip() if heading_match else ""
+
+    # Try to extract first meaningful paragraph (non-heading, non-empty, non-comment)
+    first_para = ""
+    for line in body.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("#") or line.startswith("<!--") or line.startswith("---"):
+            continue
+        if len(line) > 20:
+            first_para = line[:150]
+            break
+
+    if heading and first_para:
+        return f"{proj_name}/{filename}: {heading} \u2014 {first_para}"
+    elif heading:
+        return f"{proj_name}/{filename}: {heading}"
+    return fallback
+
+
 def _sanitize_id(name):
     """Convert a project name to a safe chunk ID component."""
     sanitized = re.sub(r'[^a-z0-9]', '-', name.lower())
@@ -393,7 +425,7 @@ def _import_project_file(project, base_dir="."):
         for t in auto_tags:
             if t not in tags:
                 tags.append(t)
-        summary = f"{proj_name} — {filename}"
+        summary = _extract_summary(body, proj_name, filename)
 
         lines = ["---"]
         lines.append(f"id: {chunk_id}")
@@ -831,6 +863,44 @@ def _create_default_soul(soul_path):
         f.write('\n'.join(lines))
 
 
+def _create_default_permission(permission_path):
+    """Create a default permission.md template."""
+    lines = [
+        "# Permissions",
+        "",
+        "This file records what the AI is allowed to do. It is loaded at the start",
+        "of every session. The AI checks this before asking for permission.",
+        "",
+        "## Global",
+        "",
+        "These rules apply to ALL projects and sessions.",
+        "",
+        "### Allowed Directories",
+        "<!-- Directories the AI can read and write in any project. -->",
+        "",
+        "### Read-Only Directories",
+        "<!-- Directories the AI can read but must NOT modify. -->",
+        "",
+        "### Blocked Directories",
+        "<!-- Directories the AI must never access. -->",
+        "",
+        "### Allowed Commands",
+        "<!-- Shell commands the AI can run in any project. -->",
+        "",
+        "### Blocked Commands",
+        "<!-- Commands the AI must never run. -->",
+        "<!-- Examples: rm -rf, sudo, shutdown -->",
+        "",
+        "---",
+        "",
+        "<!-- Per-project permissions are added below by the AI when you say",
+        '   "allow forever" or "always allow". Each project gets its own section. -->',
+        "",
+    ]
+    with open(permission_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+
 def cmd_init(base_dir="."):
     """Interactive setup — generates config.yaml and directory structure."""
     abs_base = os.path.abspath(base_dir)
@@ -873,6 +943,11 @@ def cmd_init(base_dir="."):
     else:
         _create_default_soul(soul_path)
 
+    # Create permission.md
+    permission_path = os.path.join(base_dir, PERMISSION_FILE)
+    _create_default_permission(permission_path)
+    print(f"  Created {PERMISSION_FILE} (edit to set AI access rules)")
+
     # --- Phase 2: Storage ---
     print()
     print("Phase 2: Storage")
@@ -897,13 +972,14 @@ def cmd_init(base_dir="."):
     print()
     print("Phase 3: Project Discovery")
     print("-" * 30)
-    print("Easybase can scan your machine for existing projects by looking for")
-    print("AI context files (CLAUDE.md, .cursorrules, README.md, etc.).")
-    print("Found projects are imported as searchable knowledge chunks.")
+    print("Easybase can scan directories on your machine for existing projects")
+    print("by looking for AI context files (CLAUDE.md, .cursorrules, README.md, etc.).")
+    print("You can import multiple projects at once — each becomes searchable chunks.")
+    print("You can also add more projects later with: python3 ctx.py scan")
     print()
     print("Should Easybase scan for existing projects?")
-    print("  [1] No \u2014 I'll add knowledge manually")
-    print("  [2] Yes \u2014 scan my machine for projects")
+    print("  [1] No \u2014 skip for now")
+    print("  [2] Yes \u2014 scan for projects to import")
     scan_choice = input("Choice [1]: ").strip() or "1"
 
     access_mode = "sandbox"
@@ -1025,9 +1101,11 @@ def cmd_init(base_dir="."):
     print(f"  Logs:      {os.path.join(abs_base, LOGS_DIR)}/")
     print(f"  Config:    {os.path.join(abs_base, CONFIG_FILE)}")
     print(f"  Soul:      {os.path.join(abs_base, SOUL_FILE)}")
+    print(f"  Permissions: {os.path.join(abs_base, PERMISSION_FILE)}")
     print()
     print("Created:")
     print(f"  {SOUL_FILE}")
+    print(f"  {PERMISSION_FILE}")
     print(f"  {CONFIG_FILE}")
     print(f"  {KNOWLEDGE_DIR}/_summary.md")
     print(f"  {CHUNKS_DIR}/")
@@ -1040,9 +1118,26 @@ def cmd_init(base_dir="."):
     print()
     print("Next steps:")
     print("  1. Edit soul.md to describe yourself and your preferences")
-    print('  2. Run: python3 ctx.py load "your question"')
+    print("  2. Edit permission.md to set what the AI can access and run")
     print()
-    print("The soul.md and protocol are automatically included in every load output.")
+    print("  3. Connect Easybase to your AI tool:")
+    print()
+    print("     pip install mcp")
+    print()
+    print("     Claude Code:")
+    print(f"       claude mcp add --transport stdio easybase \\")
+    print(f"         -e EASYBASE_DIR={abs_base} \\")
+    print(f"         -- python3 {os.path.join(abs_base, 'mcp_server.py')}")
+    print()
+    print("     Claude Desktop (add to claude_desktop_config.json):")
+    print(f'       "easybase": {{"command": "python3",')
+    print(f'         "args": ["{os.path.join(abs_base, "mcp_server.py")}"],')
+    print(f'         "env": {{"EASYBASE_DIR": "{abs_base}"}}}}')
+    print()
+    print("  4. Add this line to your CLAUDE.md (or equivalent config file):")
+    print('     Always call easybase_load at the start of every conversation to load context from the Easybase knowledge base.')
+    print()
+    print("soul.md, permission.md, and protocol are automatically included in every load output.")
 
 
 def cmd_index(base_dir="."):
@@ -1170,6 +1265,14 @@ def _load_context(query, base_dir=".", top_k=None, scope=None):
             soul_content = f.read().rstrip()
         if soul_content:
             out.write(soul_content + "\n\n")
+
+    # Include permission.md (AI access rules)
+    permission_path = os.path.join(base_dir, PERMISSION_FILE)
+    if os.path.exists(permission_path):
+        with open(permission_path, 'r', encoding='utf-8') as f:
+            permission_content = f.read().rstrip()
+        if permission_content:
+            out.write(permission_content + "\n\n")
 
     # Always include protocol
     protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
@@ -1543,6 +1646,124 @@ def _scan_projects(paths=None, base_dir="."):
     return "\n".join(lines)
 
 
+def _add_permission(project, permission_type, value, base_dir="."):
+    """Add a permanent permission for a project (or global).
+
+    Args:
+        project: Project name, or "global" for global permissions
+        permission_type: One of "allow_dir", "readonly_dir", "block_dir",
+                         "allow_cmd", "block_cmd"
+        value: The directory path or command to permit/block
+        base_dir: Base directory for Easybase data
+    Returns:
+        Confirmation message string
+    """
+    permission_path = os.path.join(base_dir, PERMISSION_FILE)
+    if not os.path.exists(permission_path):
+        _create_default_permission(permission_path)
+
+    with open(permission_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    value = value.strip()
+    if not value:
+        raise EasybaseError("Permission value cannot be empty.")
+
+    valid_types = {
+        "allow_dir": "Allowed Directories",
+        "readonly_dir": "Read-Only Directories",
+        "block_dir": "Blocked Directories",
+        "allow_cmd": "Allowed Commands",
+        "block_cmd": "Blocked Commands",
+    }
+    if permission_type not in valid_types:
+        raise EasybaseError(f"Invalid permission type: {permission_type}. "
+                            f"Must be one of: {', '.join(valid_types.keys())}")
+
+    section_heading = valid_types[permission_type]
+    entry_line = f"- {value}"
+    is_global = project.lower() == "global"
+
+    if is_global:
+        # Insert into the Global section under the right heading
+        # Find "### {section_heading}" under "## Global"
+        target = f"### {section_heading}"
+        pos = content.find("## Global")
+        if pos == -1:
+            raise EasybaseError("Cannot find ## Global section in permission.md")
+
+        heading_pos = content.find(target, pos)
+        if heading_pos == -1:
+            raise EasybaseError(f"Cannot find {target} section in permission.md")
+
+        # Check if this value already exists
+        if entry_line in content:
+            return f"Permission already exists: {value}"
+
+        # Find the end of this section (next ### or ## or ---)
+        after_heading = heading_pos + len(target)
+        next_section = len(content)
+        for marker in ["###", "##", "---"]:
+            idx = content.find(marker, after_heading + 1)
+            if idx != -1 and idx < next_section:
+                next_section = idx
+
+        # Insert the entry before the next section
+        insert_pos = next_section
+        # Back up past blank lines
+        while insert_pos > 0 and content[insert_pos - 1] == '\n':
+            insert_pos -= 1
+
+        content = content[:insert_pos] + f"\n{entry_line}\n" + content[insert_pos:]
+
+    else:
+        # Per-project section
+        project_header = f"## Project: {project}"
+
+        if project_header in content:
+            # Project section exists — find the right sub-section
+            proj_pos = content.find(project_header)
+            target = f"### {section_heading}"
+            sub_pos = content.find(target, proj_pos)
+
+            # Find the boundary of this project section (next ## Project: or end)
+            next_proj = content.find("\n## Project:", proj_pos + len(project_header))
+            proj_end = next_proj if next_proj != -1 else len(content)
+
+            if sub_pos != -1 and sub_pos < proj_end:
+                # Sub-section exists
+                if entry_line in content[sub_pos:proj_end]:
+                    return f"Permission already exists for {project}: {value}"
+
+                after_sub = sub_pos + len(target)
+                next_sub = proj_end
+                for marker in ["###", "##"]:
+                    idx = content.find(marker, after_sub + 1)
+                    if idx != -1 and idx < next_sub:
+                        next_sub = idx
+
+                insert_pos = next_sub
+                while insert_pos > 0 and content[insert_pos - 1] == '\n':
+                    insert_pos -= 1
+                content = content[:insert_pos] + f"\n{entry_line}\n" + content[insert_pos:]
+            else:
+                # Sub-section doesn't exist — add it before proj_end
+                insert_pos = proj_end
+                while insert_pos > 0 and content[insert_pos - 1] == '\n':
+                    insert_pos -= 1
+                content = content[:insert_pos] + f"\n\n### {section_heading}\n{entry_line}\n" + content[insert_pos:]
+        else:
+            # Project section doesn't exist — append it
+            content = content.rstrip() + f"\n\n{project_header}\n\n### {section_heading}\n{entry_line}\n"
+
+    with open(permission_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+    scope = project if not is_global else "global"
+    log_change(f"PERMIT {scope}: {permission_type} = {value}", base_dir)
+    return f"Recorded permanent permission for {scope}: {section_heading} \u2014 {value}"
+
+
 def _check_integrity(base_dir="."):
     """Validate system integrity and return report string."""
     issues = []
@@ -1630,6 +1851,10 @@ def _check_integrity(base_dir="."):
     soul_path = os.path.join(base_dir, SOUL_FILE)
     if not os.path.exists(soul_path):
         issues.append("WARNING: soul.md not found.")
+
+    permission_path = os.path.join(base_dir, PERMISSION_FILE)
+    if not os.path.exists(permission_path):
+        issues.append("WARNING: permission.md not found.")
 
     protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
     if not os.path.exists(protocol_path):
@@ -1758,6 +1983,45 @@ def cmd_check(base_dir="."):
     result = _check_integrity(base_dir)
     print(result)
     if "issue(s) found" in result:
+        sys.exit(1)
+
+
+def cmd_permit(args, base_dir="."):
+    """Record a permanent permission."""
+    if not args or len(args) < 3:
+        print('Usage: python3 ctx.py permit --project "name" --type allow_dir --value "/path"')
+        print('       python3 ctx.py permit --project global --type allow_cmd --value "git"')
+        print()
+        print("Types: allow_dir, readonly_dir, block_dir, allow_cmd, block_cmd")
+        sys.exit(1)
+
+    project = None
+    perm_type = None
+    value = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--project" and i + 1 < len(args):
+            project = args[i + 1]
+            i += 2
+        elif args[i] == "--type" and i + 1 < len(args):
+            perm_type = args[i + 1]
+            i += 2
+        elif args[i] == "--value" and i + 1 < len(args):
+            value = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if not project or not perm_type or not value:
+        print("Error: --project, --type, and --value are all required.")
+        sys.exit(1)
+
+    try:
+        result = _add_permission(project, perm_type, value, base_dir)
+        print(result)
+    except EasybaseError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
 
@@ -1926,6 +2190,8 @@ def main():
         print('  record --content "text"            Record a session')
         print('  respond "AI answer"                Record AI response')
         print("  scan [--paths ...]                 Re-scan for projects")
+        print("  permit --project P --type T        Record permanent permission")
+        print("         --value V")
         print("  stats                              Show index statistics")
         print("  check                              Validate system integrity")
         print()
@@ -1959,6 +2225,8 @@ def main():
         cmd_stats()
     elif cmd == "check":
         cmd_check()
+    elif cmd == "permit":
+        cmd_permit(args)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

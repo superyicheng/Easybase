@@ -15,6 +15,7 @@ Endpoints:
     POST /api/respond     {text}                    Record response (JSON)
     POST /api/index                                 Rebuild search index (JSON)
     POST /api/scan        {paths}                   Scan and import projects (JSON)
+    POST /api/permit      {project, type, value}    Record permanent permission (JSON)
     GET  /api/ingest                                Process inbox files (text)
     GET  /api/stats                                 Index statistics (text)
     GET  /api/check                                 System integrity check (text)
@@ -150,6 +151,16 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                 paths_str = body.get("paths", "")
                 path_list = [p.strip() for p in paths_str.split(",") if p.strip()] if paths_str else None
                 result = ctx._scan_projects(path_list, BASE_DIR)
+                self._json_response({"ok": True, "message": result})
+
+            elif parsed.path == "/api/permit":
+                project = body.get("project", "")
+                perm_type = body.get("type", "")
+                value = body.get("value", "")
+                if not project or not perm_type or not value:
+                    return self._json_response(
+                        {"error": "project, type, and value are required"}, 400)
+                result = ctx._add_permission(project, perm_type, value, BASE_DIR)
                 self._json_response({"ok": True, "message": result})
 
             else:

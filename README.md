@@ -16,6 +16,7 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 - **User-first context** — soul.md gives the AI your background and preferences before any project knowledge.
 - **Zero dependencies** — Core engine is a single Python file using only the standard library. MCP server requires one package (`mcp`).
 - **Works with any AI** — MCP server for Claude/Cursor, browser extension for ChatGPT/Claude.ai/Gemini.
+- **Import your existing projects** — Point Easybase at your project directories during setup and it imports all of them as searchable knowledge, instantly.
 - **Synonym-aware search** — Chunks get comprehensive synonym tags. A search for "authentication" finds chunks about "login" too.
 - **Full inventory prevents missed info** — Every load output lists ALL chunks, so the AI can spot what BM25 didn't match.
 - **Scales without slowing down** — Search time is proportional to matches, not corpus size. The inverted index never scans the full corpus.
@@ -28,21 +29,65 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 
 ## Setup
 
+### Step 1: Clone and initialize
+
 ```bash
 git clone https://github.com/superyicheng/Easybase.git
 cd Easybase
 python3 ctx.py init
 ```
 
-Init walks you through 4 steps:
+Init walks you through:
 1. **User Profile** — set up soul.md (your preferences, background, context for the AI)
-2. **Storage** — what the AI should store, retrieval limits, enforcement mode
-3. **Project Discovery** — optionally scan your machine for existing projects to import
-4. **Confirmation** — shows where your data will be stored
+2. **Storage** — what the AI should store, enforcement mode
+3. **Project Discovery** — **import all your existing projects at once.** You choose which directories Easybase is allowed to scan (e.g. `~/Projects`, `~/work`). Easybase scans those directories for projects containing AI context files (CLAUDE.md, .cursorrules, README.md, etc.) and imports every project it finds as searchable knowledge chunks. You can select which projects to import, or import all of them. You can always import more later with `python3 ctx.py scan`.
+
+### Step 2: Connect Easybase to your AI
+
+Easybase needs to be registered as a tool server so the AI can call it. Pick your app:
+
+**Claude Code:**
+
+```bash
+pip install mcp
+claude mcp add --transport stdio easybase \
+  -e EASYBASE_DIR=/path/to/Easybase \
+  -- python3 /path/to/Easybase/mcp_server.py
+```
+
+**Claude Desktop** — install `mcp` (`pip install mcp`), then add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "easybase": {
+      "command": "python3",
+      "args": ["/path/to/Easybase/mcp_server.py"],
+      "env": { "EASYBASE_DIR": "/path/to/Easybase" }
+    }
+  }
+}
+```
+
+**Cursor / Windsurf** — same command/args/env pattern in MCP settings. Install `mcp` first (`pip install mcp`).
+
+### Step 3: Tell the AI to use Easybase
+
+Add this line to your `CLAUDE.md` (or equivalent config file for your app):
+
+```
+Always call easybase_load at the start of every conversation to load context from the Easybase knowledge base.
+```
+
+This ensures the AI calls Easybase automatically at the start of every session, which loads the full protocol with all instructions.
+
+**That's it.** Easybase is now active. Every new conversation will load your knowledge base automatically.
+
+Available MCP tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`, `easybase_permit`
 
 ### Where your data lives
 
-All data is stored inside the easybase directory you cloned:
+All data is stored inside the Easybase directory you cloned:
 
 | Directory | Contents |
 |-----------|----------|
@@ -51,6 +96,7 @@ All data is stored inside the easybase directory you cloned:
 | `inbox/sessions/` | Auto-captured queries and responses |
 | `logs/changes.log` | Audit trail of all operations |
 | `soul.md` | Your user profile (loaded first every session) |
+| `permission.md` | AI access rules — per-project allowed directories and commands |
 | `config.yaml` | All settings |
 | `index.json` | Search index (regenerated automatically) |
 
@@ -58,45 +104,9 @@ To use a different location, set `EASYBASE_DIR` to point to your data directory.
 
 ---
 
-## Integration
+## Browser Extension — ChatGPT, Claude.ai, Gemini (partial support)
 
-### MCP Server — Claude Desktop, Claude Code, Cursor, Windsurf
-
-The AI calls all Easybase tools directly. No manual steps during interaction.
-
-```bash
-pip install mcp
-```
-
-**Claude Desktop** — add to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "easybase": {
-      "command": "python3",
-      "args": ["/path/to/easybase/mcp_server.py"],
-      "env": { "EASYBASE_DIR": "/path/to/easybase" }
-    }
-  }
-}
-```
-
-**Claude Code:**
-
-```bash
-claude mcp add --transport stdio easybase \
-  -e EASYBASE_DIR=/path/to/easybase \
-  -- python3 /path/to/easybase/mcp_server.py
-```
-
-**Cursor / Windsurf** — same command/args/env pattern in MCP settings.
-
-Available tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`
-
-### Browser Extension — ChatGPT, Claude.ai, Gemini
-
-Adds a floating button to web AI chats. Loads context into the chat input. Auto-captures AI responses.
+Adds a floating button to web AI chats. Loads context into the chat input and auto-captures AI responses. However, the AI **cannot call Easybase tools directly** — it can only read the injected context. Tools like `easybase_search`, `easybase_add`, and `easybase_scan` are not available. For full functionality, use the MCP setup above.
 
 **1. Start the local server:**
 
@@ -134,6 +144,7 @@ easybase/
 ├── PROTOCOL.md         AI instructions (auto-included in every load)
 ├── extension/          Browser extension (Chrome Manifest V3)
 ├── soul.md             User profile (generated during init)
+├── permission.md       AI access rules (generated during init)
 ├── config.yaml         Settings (generated during init)
 ├── knowledge/          Knowledge tree with summaries
 ├── chunks/             Flat chunk storage for BM25
