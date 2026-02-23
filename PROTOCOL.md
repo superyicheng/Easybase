@@ -174,15 +174,25 @@ projects, run `ctx.py scan` to re-import changed files.
 
 ## Processing inbox
 
-1. `ctx.py ingest` prepares files for your review
-2. YOU decide what knowledge to extract and how to chunk it
-3. Create chunks via `ctx.py add` following the storage rules above
+1. Call `ingest` to read all pending inbox files
+2. Review the returned content and decide what knowledge to extract
+3. Create chunks via `add` following the storage rules above
 4. Update tree summaries
+
+## Your responsibility
+
+You are responsible for all knowledge management:
+- Creating chunks when new information appears
+- Writing good summaries and synonym tags for BM25 findability
+- Updating tree summaries when understanding changes
+- Checking the full inventory to avoid missing relevant information
+- Running `ingest` to process inbox files and extract knowledge from them
+
+The user should never have to create or manage chunks manually.
 
 ## Tool Names
 
-When using Easybase via MCP server (Claude Desktop, Claude Code, Cursor,
-Windsurf), the commands use these tool names:
+When using Easybase via MCP server, the commands use these tool names:
 
 | CLI Command | MCP Tool |
 |-------------|----------|
@@ -192,6 +202,9 @@ Windsurf), the commands use these tool names:
 | `ctx.py respond` | `easybase_respond` |
 | `ctx.py index` | `easybase_index` |
 | `ctx.py stats` | `easybase_stats` |
+| `ctx.py ingest` | `easybase_ingest` |
+| `ctx.py scan` | `easybase_scan` |
+| `ctx.py check` | `easybase_check` |
 
 The protocol loop is the same regardless of how you access Easybase.
 When this protocol says `ctx.py load`, use `easybase_load` if you are

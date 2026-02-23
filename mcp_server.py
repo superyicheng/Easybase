@@ -130,5 +130,37 @@ def easybase_stats() -> str:
         return f"Error: {e}"
 
 
+@mcp.tool()
+def easybase_ingest() -> str:
+    """Process files in the inbox. Returns file contents for review and chunk extraction."""
+    try:
+        return ctx._ingest_files(BASE_DIR)
+    except ctx.EasybaseError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def easybase_scan(paths: str = "") -> str:
+    """Scan for projects and import new ones as searchable chunks.
+
+    Args:
+        paths: Comma-separated scan paths (default: uses paths from config)
+    """
+    try:
+        path_list = [p.strip() for p in paths.split(",") if p.strip()] if paths else None
+        return ctx._scan_projects(path_list, BASE_DIR)
+    except ctx.EasybaseError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def easybase_check() -> str:
+    """Validate system integrity — check chunks, index, symlinks, config."""
+    try:
+        return ctx._check_integrity(BASE_DIR)
+    except ctx.EasybaseError as e:
+        return f"Error: {e}"
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")

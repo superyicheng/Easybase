@@ -1491,6 +1491,176 @@ def _get_stats(base_dir="."):
     return out.getvalue().rstrip()
 
 
+def _ingest_files(base_dir="."):
+    """Process inbox files and return their contents as a string."""
+    inbox_sessions = os.path.join(base_dir, INBOX_DIR, "sessions")
+    inbox_files = os.path.join(base_dir, INBOX_DIR, "files")
+    processed_dir = os.path.join(base_dir, INBOX_DIR, "processed")
+    os.makedirs(processed_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = io.StringIO()
+    found = False
+
+    if os.path.isdir(inbox_sessions):
+        for fname in sorted(os.listdir(inbox_sessions)):
+            fpath = os.path.join(inbox_sessions, fname)
+            if not os.path.isfile(fpath):
+                continue
+            found = True
+            out.write(f"\n{'='*60}\n")
+            out.write(f"SESSION LOG: {fname}\n")
+            out.write(f"{'='*60}\n")
+            with open(fpath, 'r', encoding='utf-8') as f:
+                out.write(f.read())
+            dest = os.path.join(processed_dir, f"{timestamp}_{fname}")
+            shutil.move(fpath, dest)
+            out.write(f"\n[Moved to processed/]\n")
+            log_change(f"INGEST session:{fname}", base_dir)
+
+    if os.path.isdir(inbox_files):
+        for fname in sorted(os.listdir(inbox_files)):
+            fpath = os.path.join(inbox_files, fname)
+            if not os.path.isfile(fpath):
+                continue
+            found = True
+            out.write(f"\n{'='*60}\n")
+            out.write(f"FILE: {fname}\n")
+            out.write(f"{'='*60}\n")
+            with open(fpath, 'r', encoding='utf-8') as f:
+                out.write(f.read())
+            dest = os.path.join(processed_dir, f"{timestamp}_{fname}")
+            shutil.move(fpath, dest)
+            out.write(f"\n[Moved to processed/]\n")
+            log_change(f"INGEST file:{fname}", base_dir)
+
+    if not found:
+        return "No files to process in inbox/."
+    return out.getvalue()
+
+
+def _scan_projects(paths=None, base_dir="."):
+    """Scan for projects and import all new ones. Returns status message."""
+    abs_base = os.path.abspath(base_dir)
+    config = load_config(base_dir)
+
+    scan_paths = paths if paths else config.get("scan", {}).get("paths", [])
+    max_depth = config.get("scan", {}).get("max_depth", 3)
+
+    if not scan_paths:
+        raise EasybaseError("No scan paths configured. Set scan paths in config.yaml.")
+
+    found = _find_projects(scan_paths, max_depth=max_depth, exclude_dir=abs_base)
+    registry = _load_projects_registry(base_dir)
+    new_projects = [p for p in found if p["path"] not in registry]
+
+    if not new_projects:
+        return f"Found {len(found)} project(s), all already imported."
+
+    all_imported = _import_projects(new_projects, base_dir)
+    lines = [f"Imported {len(all_imported)} chunk(s) from {len(new_projects)} new project(s):"]
+    for proj in new_projects:
+        lines.append(f"  - {proj['name']} ({', '.join(proj['files'])})")
+    return "\n".join(lines)
+
+
+def _check_integrity(base_dir="."):
+    """Validate system integrity and return report string."""
+    issues = []
+
+    config_path = os.path.join(base_dir, CONFIG_FILE)
+    if not os.path.exists(config_path):
+        issues.append("WARNING: config.yaml not found.")
+    else:
+        try:
+            load_config(base_dir)
+        except Exception as e:
+            issues.append(f"ERROR: config.yaml is invalid: {e}")
+
+    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
+    index_path = os.path.join(base_dir, INDEX_FILE)
+
+    chunk_files = set()
+    if os.path.isdir(chunks_dir):
+        chunk_files = {f for f in os.listdir(chunks_dir) if f.endswith(".md")}
+
+    if not os.path.exists(index_path):
+        if chunk_files:
+            issues.append("WARNING: index.json not found but chunks exist. Run index to fix.")
+    else:
+        with open(index_path, 'r', encoding='utf-8') as f:
+            index = json.load(f)
+        indexed_chunks = set(index.get("chunks", {}).keys())
+        for fname in sorted(chunk_files):
+            filepath = os.path.join(chunks_dir, fname)
+            chunk = parse_chunk(filepath)
+            if chunk is None:
+                issues.append(f"ERROR: {fname} has invalid frontmatter")
+            elif not chunk["id"]:
+                issues.append(f"ERROR: {fname} missing 'id' field")
+            elif not chunk["summary"]:
+                issues.append(f"WARNING: {fname} missing 'summary' field")
+
+        actual_ids = set()
+        for fname in chunk_files:
+            c = parse_chunk(os.path.join(chunks_dir, fname))
+            if c and c["id"]:
+                actual_ids.add(c["id"])
+
+        stale = indexed_chunks - actual_ids
+        missing = actual_ids - indexed_chunks
+        if stale:
+            issues.append(f"WARNING: Index contains chunks not on disk: {', '.join(sorted(stale))}")
+        if missing:
+            issues.append(f"WARNING: Chunks on disk not in index: {', '.join(sorted(missing))}. Run index to fix.")
+
+    all_ids = set()
+    all_depends = defaultdict(list)
+    if os.path.isdir(chunks_dir):
+        for fname in sorted(chunk_files):
+            c = parse_chunk(os.path.join(chunks_dir, fname))
+            if c and c["id"]:
+                all_ids.add(c["id"])
+                for dep in c["depends"]:
+                    dep = dep.strip()
+                    if dep and dep != "\u2014":
+                        all_depends[c["id"]].append(dep)
+
+    for chunk_id, deps in all_depends.items():
+        for dep in deps:
+            if dep not in all_ids:
+                issues.append(f"WARNING: {chunk_id} depends on '{dep}' which does not exist")
+
+    knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
+    if os.path.isdir(knowledge_dir):
+        for root, dirs, files in os.walk(knowledge_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                if os.path.islink(fpath):
+                    target = os.path.realpath(fpath)
+                    if not os.path.exists(target):
+                        rel = os.path.relpath(fpath, base_dir)
+                        issues.append(f"ERROR: Broken symlink: {rel}")
+                if fname == "_summary.md":
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                    if not content:
+                        rel = os.path.relpath(fpath, base_dir)
+                        issues.append(f"WARNING: Empty summary: {rel}")
+
+    soul_path = os.path.join(base_dir, SOUL_FILE)
+    if not os.path.exists(soul_path):
+        issues.append("WARNING: soul.md not found.")
+
+    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
+    if not os.path.exists(protocol_path):
+        issues.append("WARNING: PROTOCOL.md not found")
+
+    if issues:
+        return "\n".join(issues) + f"\n\n{len(issues)} issue(s) found."
+    return "All checks passed."
+
+
 # --- CLI Commands (thin wrappers) ---
 
 def cmd_load(args, base_dir="."):
@@ -1597,56 +1767,7 @@ def cmd_add(args, base_dir="."):
 
 def cmd_ingest(base_dir="."):
     """Process files in inbox/ for AI review."""
-    inbox_sessions = os.path.join(base_dir, INBOX_DIR, "sessions")
-    inbox_files = os.path.join(base_dir, INBOX_DIR, "files")
-    processed_dir = os.path.join(base_dir, INBOX_DIR, "processed")
-    os.makedirs(processed_dir, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    found = False
-
-    # Process session logs
-    if os.path.isdir(inbox_sessions):
-        for fname in sorted(os.listdir(inbox_sessions)):
-            fpath = os.path.join(inbox_sessions, fname)
-            if not os.path.isfile(fpath):
-                continue
-            found = True
-
-            print(f"\n{'='*60}")
-            print(f"SESSION LOG: {fname}")
-            print(f"{'='*60}")
-            with open(fpath, 'r', encoding='utf-8') as f:
-                print(f.read())
-
-            dest = os.path.join(processed_dir, f"{timestamp}_{fname}")
-            shutil.move(fpath, dest)
-            print(f"\n[Moved to {dest}]")
-            log_change(f"INGEST session:{fname}", base_dir)
-
-    # Process files
-    if os.path.isdir(inbox_files):
-        for fname in sorted(os.listdir(inbox_files)):
-            fpath = os.path.join(inbox_files, fname)
-            if not os.path.isfile(fpath):
-                continue
-            found = True
-
-            print(f"\n{'='*60}")
-            print(f"FILE: {fname}")
-            print(f"{'='*60}")
-            with open(fpath, 'r', encoding='utf-8') as f:
-                print(f.read())
-
-            dest = os.path.join(processed_dir, f"{timestamp}_{fname}")
-            shutil.move(fpath, dest)
-            print(f"\n[Moved to {dest}]")
-            log_change(f"INGEST file:{fname}", base_dir)
-
-    if not found:
-        print("No files to process in inbox/.")
-    else:
-        print(f"\nAll files processed. Review the output above and create chunks with ctx.py add.")
+    print(_ingest_files(base_dir))
 
 
 def cmd_stats(base_dir="."):
@@ -1656,113 +1777,10 @@ def cmd_stats(base_dir="."):
 
 def cmd_check(base_dir="."):
     """Validate system integrity."""
-    issues = []
-
-    # Check config.yaml
-    config_path = os.path.join(base_dir, CONFIG_FILE)
-    if not os.path.exists(config_path):
-        issues.append("WARNING: config.yaml not found. Run 'python3 ctx.py init'.")
-    else:
-        try:
-            load_config(base_dir)
-        except Exception as e:
-            issues.append(f"ERROR: config.yaml is invalid: {e}")
-
-    # Check index.json exists and matches chunks
-    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
-    index_path = os.path.join(base_dir, INDEX_FILE)
-
-    chunk_files = set()
-    if os.path.isdir(chunks_dir):
-        chunk_files = {f for f in os.listdir(chunks_dir) if f.endswith(".md")}
-
-    if not os.path.exists(index_path):
-        if chunk_files:
-            issues.append("WARNING: index.json not found but chunks exist. Run 'python3 ctx.py index'.")
-    else:
-        with open(index_path, 'r', encoding='utf-8') as f:
-            index = json.load(f)
-        indexed_chunks = set(index.get("chunks", {}).keys())
-        # Check each chunk file has valid frontmatter
-        for fname in sorted(chunk_files):
-            filepath = os.path.join(chunks_dir, fname)
-            chunk = parse_chunk(filepath)
-            if chunk is None:
-                issues.append(f"ERROR: {fname} has invalid frontmatter")
-            elif not chunk["id"]:
-                issues.append(f"ERROR: {fname} missing 'id' field")
-            elif not chunk["summary"]:
-                issues.append(f"WARNING: {fname} missing 'summary' field")
-
-        # Check index matches current chunk files
-        actual_ids = set()
-        for fname in chunk_files:
-            c = parse_chunk(os.path.join(chunks_dir, fname))
-            if c and c["id"]:
-                actual_ids.add(c["id"])
-
-        stale = indexed_chunks - actual_ids
-        missing = actual_ids - indexed_chunks
-        if stale:
-            issues.append(f"WARNING: Index contains chunks not on disk: {', '.join(sorted(stale))}")
-        if missing:
-            issues.append(f"WARNING: Chunks on disk not in index: {', '.join(sorted(missing))}. Run 'python3 ctx.py index'.")
-
-    # Check depends references
-    all_ids = set()
-    all_depends = defaultdict(list)
-    if os.path.isdir(chunks_dir):
-        for fname in sorted(chunk_files):
-            c = parse_chunk(os.path.join(chunks_dir, fname))
-            if c and c["id"]:
-                all_ids.add(c["id"])
-                for dep in c["depends"]:
-                    dep = dep.strip()
-                    if dep and dep != "\u2014":
-                        all_depends[c["id"]].append(dep)
-
-    for chunk_id, deps in all_depends.items():
-        for dep in deps:
-            if dep not in all_ids:
-                issues.append(f"WARNING: {chunk_id} depends on '{dep}' which does not exist")
-
-    # Check symlinks in knowledge/
-    knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
-    if os.path.isdir(knowledge_dir):
-        for root, dirs, files in os.walk(knowledge_dir):
-            for fname in files:
-                fpath = os.path.join(root, fname)
-                if os.path.islink(fpath):
-                    target = os.path.realpath(fpath)
-                    if not os.path.exists(target):
-                        rel = os.path.relpath(fpath, base_dir)
-                        issues.append(f"ERROR: Broken symlink: {rel} \u2192 {target}")
-                if fname == "_summary.md":
-                    with open(fpath, 'r', encoding='utf-8') as f:
-                        content = f.read().strip()
-                    if not content:
-                        rel = os.path.relpath(fpath, base_dir)
-                        issues.append(f"WARNING: Empty summary: {rel}")
-
-    # Check soul.md
-    soul_path = os.path.join(base_dir, SOUL_FILE)
-    if not os.path.exists(soul_path):
-        issues.append("WARNING: soul.md not found. Run 'python3 ctx.py init'.")
-
-    # Check PROTOCOL.md
-    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
-    if not os.path.exists(protocol_path):
-        issues.append("WARNING: PROTOCOL.md not found")
-
-    # Report
-    if issues:
-        for issue in issues:
-            print(issue)
-        print(f"\n{len(issues)} issue(s) found.")
+    result = _check_integrity(base_dir)
+    print(result)
+    if "issue(s) found" in result:
         sys.exit(1)
-    else:
-        print("All checks passed.")
-        sys.exit(0)
 
 
 def cmd_record(args, base_dir="."):

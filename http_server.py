@@ -14,7 +14,10 @@ Endpoints:
     POST /api/add         {id, summary, body, ...}  Create chunk (JSON)
     POST /api/respond     {text}                    Record response (JSON)
     POST /api/index                                 Rebuild search index (JSON)
+    POST /api/scan        {paths}                   Scan and import projects (JSON)
+    GET  /api/ingest                                Process inbox files (text)
     GET  /api/stats                                 Index statistics (text)
+    GET  /api/check                                 System integrity check (text)
     GET  /api/status                                Health check (JSON)
 """
 
@@ -86,6 +89,14 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                 result = ctx._get_stats(BASE_DIR)
                 self._text_response(result)
 
+            elif path == "/api/ingest":
+                result = ctx._ingest_files(BASE_DIR)
+                self._text_response(result)
+
+            elif path == "/api/check":
+                result = ctx._check_integrity(BASE_DIR)
+                self._text_response(result)
+
             elif path == "/api/status":
                 try:
                     index = ctx.load_index(BASE_DIR)
@@ -137,6 +148,12 @@ class EasybaseHandler(BaseHTTPRequestHandler):
 
             elif parsed.path == "/api/index":
                 result = ctx._rebuild_index(BASE_DIR)
+                self._json_response({"ok": True, "message": result})
+
+            elif parsed.path == "/api/scan":
+                paths_str = body.get("paths", "")
+                path_list = [p.strip() for p in paths_str.split(",") if p.strip()] if paths_str else None
+                result = ctx._scan_projects(path_list, BASE_DIR)
                 self._json_response({"ok": True, "message": result})
 
             else:
