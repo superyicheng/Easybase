@@ -18,6 +18,15 @@ class EasybaseError(Exception):
     """Raised instead of sys.exit() in internal functions."""
     pass
 
+
+BANNER = r"""
+  ___                _
+ | __|__ _ ____  _  | |__  __ _ ___ ___
+ | _|/ _` (_-< || | | '_ \/ _` (_-</ -_)
+ |___\__,_/__/\_, | |_.__/\__,_/__/\___|
+              |__/
+"""
+
 # --- Defaults ---
 
 CHUNKS_DIR = "chunks"
@@ -209,20 +218,13 @@ def generate_yaml(config):
 
 # --- Config ---
 
-def _default_config(name="", description="", storage_mode="all",
-                    access_mode="sandbox", max_top_k=DEFAULT_MAX_TOP_K,
-                    owner="", owner_role="", scan_paths=None,
+def _default_config(storage_mode="all", access_mode="sandbox",
+                    max_top_k=DEFAULT_MAX_TOP_K, scan_paths=None,
                     enforcement=False):
     if scan_paths is None:
         scan_paths = []
     allowed_paths = scan_paths if access_mode == "local-read" else []
     return {
-        "project": {
-            "name": name,
-            "description": description,
-            "owner": owner,
-            "owner_role": owner_role,
-        },
         "storage": {"mode": storage_mode},
         "access": {"mode": access_mode, "allowed_paths": allowed_paths},
         "scan": {"paths": scan_paths, "max_depth": 3},
@@ -246,9 +248,6 @@ def load_config(base_dir="."):
     with open(config_path, 'r', encoding='utf-8') as f:
         config = parse_yaml(f.read())
 
-    p = config.setdefault("project", {"name": "", "description": ""})
-    p.setdefault("owner", "")
-    p.setdefault("owner_role", "")
     config.setdefault("storage", {"mode": "all"})
     config.setdefault("access", {"mode": "sandbox", "allowed_paths": []})
     sc = config.setdefault("scan", {})
@@ -841,8 +840,9 @@ def cmd_init(base_dir="."):
     """Interactive setup — generates config.yaml and directory structure."""
     abs_base = os.path.abspath(base_dir)
 
-    print("Easybase Setup")
-    print("==============")
+    print(BANNER)
+    print("  Setup")
+    print("  " + "=" * 30)
     print()
 
     # --- Phase 1: User Profile ---
@@ -878,14 +878,10 @@ def cmd_init(base_dir="."):
     else:
         _create_default_soul(soul_path)
 
-    # --- Phase 2: Knowledge Base ---
+    # --- Phase 2: Storage ---
     print()
-    print("Phase 2: Knowledge Base")
+    print("Phase 2: Storage")
     print("-" * 30)
-    name = input("Knowledge base name: ").strip() or "My Knowledge Base"
-    description = input("Description: ").strip()
-
-    print()
     print("What should the AI store?")
     print("  [1] Everything (recommended \u2014 search handles relevance)")
     print("  [2] AI decides what's worth keeping")
@@ -1003,9 +999,9 @@ def cmd_init(base_dir="."):
 
     # Generate config
     config = _default_config(
-        name=name, description=description, storage_mode=storage_mode,
-        access_mode=access_mode, max_top_k=max_top_k,
-        scan_paths=scan_paths, enforcement=enforcement,
+        storage_mode=storage_mode, access_mode=access_mode,
+        max_top_k=max_top_k, scan_paths=scan_paths,
+        enforcement=enforcement,
     )
     config_path = os.path.join(base_dir, CONFIG_FILE)
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -1931,7 +1927,8 @@ def cmd_scan(args, base_dir="."):
 
 def main():
     if len(sys.argv) < 2:
-        print("Easybase \u2014 BM25-based context management for AI")
+        print(BANNER)
+        print("  BM25-based context management for AI")
         print()
         print("Commands:")
         print("  init                               Interactive setup")

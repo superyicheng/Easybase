@@ -100,11 +100,9 @@ class EasybaseHandler(BaseHTTPRequestHandler):
             elif path == "/api/status":
                 try:
                     index = ctx.load_index(BASE_DIR)
-                    config = ctx.load_config(BASE_DIR)
                     self._json_response({
                         "ok": True,
                         "chunks": index["N"],
-                        "name": config.get("project", {}).get("name", ""),
                     })
                 except (ctx.EasybaseError, Exception):
                     self._json_response({"ok": False, "chunks": 0, "error": "No index found"})

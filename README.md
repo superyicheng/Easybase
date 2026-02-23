@@ -1,10 +1,6 @@
-<p align="center">
-  <img src="logo.png" alt="Easybase" width="120">
-</p>
+# Easybase
 
-<h1 align="center">Easybase</h1>
-
-<p align="center">A BM25-based context management system that helps AI work with large knowledge bases across sessions.<br>Store knowledge as small chunks, maintain a structural overview, and retrieve only what's relevant.</p>
+A BM25-based context management system that helps AI work with large knowledge bases across sessions. Store knowledge as small chunks, maintain a structural overview, and retrieve only what's relevant.
 
 ---
 
@@ -40,7 +36,7 @@ python3 ctx.py init
 
 Init walks you through 4 steps:
 1. **User Profile** — set up soul.md (your preferences, background, context for the AI)
-2. **Knowledge Base** — name, storage settings
+2. **Storage** — what the AI should store, retrieval limits, enforcement mode
 3. **Project Discovery** — optionally scan your machine for existing projects to import
 4. **Confirmation** — shows where your data will be stored
 
