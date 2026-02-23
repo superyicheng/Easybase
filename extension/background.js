@@ -10,7 +10,7 @@ async function getServerUrl() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "load") {
-    handleLoad(message.query, message.top_k).then(sendResponse);
+    handleLoad(message.query).then(sendResponse);
     return true;
   }
   if (message.action === "search") {
@@ -27,10 +27,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-async function handleLoad(query, topK = 10) {
+async function handleLoad(query) {
   try {
     const url = await getServerUrl();
-    const params = new URLSearchParams({ query, top_k: topK });
+    const params = new URLSearchParams({ query });
     const resp = await fetch(`${url}/api/load?${params}`);
     if (!resp.ok) {
       const text = await resp.text();

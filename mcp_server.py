@@ -37,34 +37,37 @@ BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.dirname(os.path.abspath(__file
 
 
 @mcp.tool()
-def easybase_load(query: str, top_k: int = 10, scope: str = "") -> str:
+def easybase_load(query: str, scope: str = "") -> str:
     """Load context from the Easybase knowledge base. Call this FIRST for every user message.
 
-    Returns soul.md + protocol + relevant chunks + full inventory of all chunks.
+    Returns soul.md + protocol + all matching chunks + full inventory of all chunks.
     The AI should read the returned context and reason ONLY from it.
+    All matching chunks are returned — use the full inventory to decide if you
+    need to search for more, or if summaries provide enough abstract context.
 
     Args:
         query: The user's message or search query
-        top_k: Maximum chunks to return (default 10)
         scope: Limit search to a knowledge tree path (e.g. "api/auth")
     """
     try:
-        return ctx._load_context(query, BASE_DIR, top_k, scope or None)
+        return ctx._load_context(query, BASE_DIR, scope=scope or None)
     except ctx.EasybaseError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def easybase_search(query: str, top_k: int = 10, scope: str = "") -> str:
+def easybase_search(query: str, scope: str = "") -> str:
     """Search for specific chunks in the knowledge base. Use for follow-up queries after load.
+
+    Returns all matching chunks ranked by relevance. Use summaries from the
+    full inventory to decide what additional searches you need.
 
     Args:
         query: Search terms
-        top_k: Maximum results (default 10)
         scope: Limit to knowledge tree path (e.g. "api/auth")
     """
     try:
-        results = ctx._search_results(query, BASE_DIR, top_k, scope or None)
+        results = ctx._search_results(query, BASE_DIR, scope=scope or None)
         if not results:
             return "No results found."
         lines = [f'Search: "{query}"', ""]

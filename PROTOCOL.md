@@ -29,10 +29,14 @@ This automatically records the user's prompt and returns:
 
 - Do NOT reference anything from prior conversation turns
 - Do NOT assume you know something — if it wasn't in the load output, search for it
-- If you need more detail on a sub-topic:
+- All matching chunks are returned in full — there is no artificial limit
+- If you need more detail on a sub-topic, search for it:
   ```
   ctx.py search "specific terms"
   ```
+- Stop searching when you have enough information to answer. The full
+  inventory and summaries give you abstract context for everything else —
+  you don't need to load every chunk, only the ones relevant to the question.
 
 ### Step 3: Answer the user
 

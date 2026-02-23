@@ -63,7 +63,6 @@ DEFAULT_SCAN_PATHS_LINUX = [
 DEFAULT_K1 = 1.5
 DEFAULT_B = 0.75
 DEFAULT_IDF_FLOOR = 0.1
-DEFAULT_MAX_TOP_K = 10
 
 STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -219,8 +218,7 @@ def generate_yaml(config):
 # --- Config ---
 
 def _default_config(storage_mode="all", access_mode="sandbox",
-                    max_top_k=DEFAULT_MAX_TOP_K, scan_paths=None,
-                    enforcement=False):
+                    scan_paths=None, enforcement=False):
     if scan_paths is None:
         scan_paths = []
     allowed_paths = scan_paths if access_mode == "local-read" else []
@@ -230,7 +228,6 @@ def _default_config(storage_mode="all", access_mode="sandbox",
         "scan": {"paths": scan_paths, "max_depth": 3},
         "enforcement": {"citation_required": enforcement},
         "search": {
-            "max_top_k": max_top_k,
             "bm25_k1": DEFAULT_K1,
             "bm25_b": DEFAULT_B,
             "idf_floor": DEFAULT_IDF_FLOOR,
@@ -254,7 +251,6 @@ def load_config(base_dir="."):
     sc.setdefault("paths", [])
     sc.setdefault("max_depth", 3)
     s = config.setdefault("search", {})
-    s.setdefault("max_top_k", DEFAULT_MAX_TOP_K)
     s.setdefault("bm25_k1", DEFAULT_K1)
     s.setdefault("bm25_b", DEFAULT_B)
     s.setdefault("idf_floor", DEFAULT_IDF_FLOOR)
@@ -744,9 +740,6 @@ def load_index(base_dir="."):
 
 def search(query, index, top_k=None, scope=None, verbose=False):
     """Run modified BM25 search."""
-    if top_k is None:
-        top_k = DEFAULT_MAX_TOP_K
-
     tokens = tokenize(query)
     if not tokens:
         return []
@@ -794,7 +787,9 @@ def search(query, index, top_k=None, scope=None, verbose=False):
         w = ref_weights.get(chunk_id, 1.0)
         scores[chunk_id] *= w
 
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    if top_k is not None:
+        ranked = ranked[:top_k]
 
     results = []
     for chunk_id, score in ranked:
@@ -889,10 +884,6 @@ def cmd_init(base_dir="."):
     storage_choice = input("Choice [1]: ").strip() or "1"
     storage_map = {"1": "all", "2": "selective", "3": "manual"}
     storage_mode = storage_map.get(storage_choice, "all")
-
-    print()
-    max_top_k_str = input(f"Maximum chunks to retrieve per search [default {DEFAULT_MAX_TOP_K}]: ").strip()
-    max_top_k = int(max_top_k_str) if max_top_k_str.isdigit() else DEFAULT_MAX_TOP_K
 
     print()
     print("Enforcement mode controls whether the AI must use ONLY the knowledge base")
@@ -1000,8 +991,7 @@ def cmd_init(base_dir="."):
     # Generate config
     config = _default_config(
         storage_mode=storage_mode, access_mode=access_mode,
-        max_top_k=max_top_k, scan_paths=scan_paths,
-        enforcement=enforcement,
+        scan_paths=scan_paths, enforcement=enforcement,
     )
     config_path = os.path.join(base_dir, CONFIG_FILE)
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -1071,8 +1061,7 @@ def cmd_search(args, base_dir="."):
         sys.exit(1)
 
     query = args[0]
-    config = load_config(base_dir)
-    top_k = config["search"]["max_top_k"]
+    top_k = None
     scope = None
     verbose = False
 
@@ -1163,8 +1152,6 @@ def _check_project_freshness(base_dir="."):
 def _load_context(query, base_dir=".", top_k=None, scope=None):
     """Build and return the full context block as a string."""
     config = load_config(base_dir)
-    if top_k is None:
-        top_k = config["search"]["max_top_k"]
 
     # Auto-capture the user's query
     _auto_capture(query, "query", base_dir)
@@ -1283,9 +1270,6 @@ def _load_context(query, base_dir=".", top_k=None, scope=None):
 
 def _search_results(query, base_dir=".", top_k=None, scope=None):
     """Search and return list of result dicts."""
-    config = load_config(base_dir)
-    if top_k is None:
-        top_k = config["search"]["max_top_k"]
     index = load_index(base_dir)
     return search(query, index, top_k=top_k, scope=scope)
 
@@ -1665,8 +1649,7 @@ def cmd_load(args, base_dir="."):
         sys.exit(1)
 
     query = args[0]
-    config = load_config(base_dir)
-    top_k = config["search"]["max_top_k"]
+    top_k = None
     scope = None
 
     i = 1

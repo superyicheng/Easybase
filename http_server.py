@@ -71,18 +71,16 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                 query = params.get("query", [""])[0]
                 if not query:
                     return self._json_response({"error": "query parameter required"}, 400)
-                top_k = int(params.get("top_k", ["10"])[0])
                 scope = params.get("scope", [None])[0]
-                result = ctx._load_context(query, BASE_DIR, top_k, scope)
+                result = ctx._load_context(query, BASE_DIR, scope=scope)
                 self._text_response(result)
 
             elif path == "/api/search":
                 query = params.get("query", [""])[0]
                 if not query:
                     return self._json_response({"error": "query parameter required"}, 400)
-                top_k = int(params.get("top_k", ["10"])[0])
                 scope = params.get("scope", [None])[0]
-                results = ctx._search_results(query, BASE_DIR, top_k, scope)
+                results = ctx._search_results(query, BASE_DIR, scope=scope)
                 self._json_response({"results": results})
 
             elif path == "/api/stats":
