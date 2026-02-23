@@ -4,19 +4,51 @@
 import json
 import math
 import os
+import platform
 import re
+import shutil
 import sys
 from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 
-# --- Configuration ---
+# --- Defaults ---
 
 CHUNKS_DIR = "chunks"
+KNOWLEDGE_DIR = "knowledge"
+INBOX_DIR = "inbox"
+LOGS_DIR = "logs"
 INDEX_FILE = "index.json"
-MANIFEST_FILE = "manifest.md"
+CONFIG_FILE = "config.yaml"
+PROTOCOL_FILE = "PROTOCOL.md"
+SOUL_FILE = "soul.md"
+CHANGES_LOG = "logs/changes.log"
+PROJECTS_FILE = "projects.json"
 
-BM25_K1 = 1.5
-BM25_B = 0.75
-IDF_FLOOR = 0.1
+SCAN_TARGETS = [
+    "CLAUDE.md", ".cursorrules", ".cursorignore",
+    "AGENTS.md", ".github/copilot-instructions.md",
+    "README.md", "CONVENTIONS.md",
+]
+
+SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", "venv", ".venv", "env",
+    ".env", ".tox", ".mypy_cache", ".pytest_cache", "dist", "build",
+    ".next", ".nuxt", "target", "vendor",
+}
+
+DEFAULT_SCAN_PATHS_MACOS = [
+    "~/Desktop", "~/Documents", "~/Developer", "~/Projects", "~/repos", "~/code",
+]
+
+DEFAULT_SCAN_PATHS_LINUX = [
+    "~/Desktop", "~/Documents", "~/projects", "~/repos", "~/code", "~/src",
+]
+
+DEFAULT_K1 = 1.5
+DEFAULT_B = 0.75
+DEFAULT_IDF_FLOOR = 0.1
+DEFAULT_MAX_TOP_K = 10
 
 STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -36,6 +68,415 @@ STOPWORDS = {
 }
 
 
+# --- Simple YAML Parser ---
+
+def _strip_yaml_comment(line):
+    """Remove inline YAML comment, preserving # inside quotes."""
+    in_quote = False
+    quote_char = None
+    for i, ch in enumerate(line):
+        if ch in ('"', "'") and not in_quote:
+            in_quote = True
+            quote_char = ch
+        elif ch == quote_char and in_quote:
+            in_quote = False
+        elif ch == '#' and not in_quote:
+            return line[:i].rstrip()
+    return line
+
+
+def _parse_yaml_value(value):
+    """Parse a single YAML value."""
+    value = value.strip()
+    if not value:
+        return ""
+    if (value.startswith('"') and value.endswith('"')) or \
+       (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    if value.startswith('[') and value.endswith(']'):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [v.strip().strip('"').strip("'") for v in inner.split(',')]
+    if value.lower() == 'true':
+        return True
+    if value.lower() == 'false':
+        return False
+    try:
+        if '.' in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        pass
+    return value
+
+
+def parse_yaml(text):
+    """Parse simple 2-level YAML (sufficient for config.yaml)."""
+    result = {}
+    section = None
+    list_key = None
+
+    for raw_line in text.split('\n'):
+        line = _strip_yaml_comment(raw_line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        indent = len(line) - len(line.lstrip())
+
+        if stripped.startswith('- ') and section and list_key:
+            item = stripped[2:].strip().strip('"').strip("'")
+            if section in result and list_key in result[section]:
+                result[section][list_key].append(item)
+            continue
+
+        if ':' not in stripped:
+            continue
+
+        key, _, value = stripped.partition(':')
+        key = key.strip()
+        value = value.strip()
+
+        if indent == 0:
+            if value:
+                result[key] = _parse_yaml_value(value)
+                section = None
+            else:
+                result[key] = {}
+                section = key
+            list_key = None
+        elif section is not None:
+            if value:
+                result[section][key] = _parse_yaml_value(value)
+                list_key = None
+            else:
+                result[section][key] = []
+                list_key = key
+
+    return result
+
+
+def generate_yaml(config):
+    """Generate YAML string from a config dict."""
+    lines = [
+        "# Easybase Configuration",
+        "# Edit this file to change behavior. No code changes needed.",
+        "",
+    ]
+
+    comment_map = {
+        ("storage", "mode"): "# all | selective | manual",
+        ("access", "mode"): "# sandbox | local-read",
+        ("access", "allowed_paths"): "# only used if mode is local-read",
+        ("scan", "paths"): "# directories to scan for projects",
+        ("scan", "max_depth"): "# how deep to scan (default 3)",
+    }
+
+    for section_key, section_val in config.items():
+        if isinstance(section_val, dict):
+            lines.append(f"{section_key}:")
+            for key, value in section_val.items():
+                comment = comment_map.get((section_key, key), "")
+                if isinstance(value, list):
+                    if not value:
+                        suffix = f"  {comment}" if comment else ""
+                        lines.append(f"  {key}: []{suffix}")
+                    else:
+                        lines.append(f"  {key}:")
+                        for item in value:
+                            lines.append(f'    - "{item}"')
+                elif isinstance(value, bool):
+                    lines.append(f"  {key}: {'true' if value else 'false'}")
+                elif isinstance(value, str):
+                    suffix = f"  {comment}" if comment else ""
+                    lines.append(f'  {key}: "{value}"{suffix}')
+                else:
+                    lines.append(f"  {key}: {value}")
+            lines.append("")
+        else:
+            lines.append(f"{section_key}: {section_val}")
+
+    return '\n'.join(lines) + '\n'
+
+
+# --- Config ---
+
+def _default_config(name="", description="", storage_mode="all",
+                    access_mode="sandbox", max_top_k=DEFAULT_MAX_TOP_K,
+                    owner="", owner_role="", scan_paths=None):
+    if scan_paths is None:
+        scan_paths = []
+    allowed_paths = scan_paths if access_mode == "local-read" else []
+    return {
+        "project": {
+            "name": name,
+            "description": description,
+            "owner": owner,
+            "owner_role": owner_role,
+        },
+        "storage": {"mode": storage_mode},
+        "access": {"mode": access_mode, "allowed_paths": allowed_paths},
+        "scan": {"paths": scan_paths, "max_depth": 3},
+        "search": {
+            "max_top_k": max_top_k,
+            "bm25_k1": DEFAULT_K1,
+            "bm25_b": DEFAULT_B,
+            "idf_floor": DEFAULT_IDF_FLOOR,
+        },
+        "tree": {"sibling_read": True},
+    }
+
+
+def load_config(base_dir="."):
+    """Load config.yaml, falling back to defaults."""
+    config_path = os.path.join(base_dir, CONFIG_FILE)
+    if not os.path.exists(config_path):
+        return _default_config()
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = parse_yaml(f.read())
+
+    p = config.setdefault("project", {"name": "", "description": ""})
+    p.setdefault("owner", "")
+    p.setdefault("owner_role", "")
+    config.setdefault("storage", {"mode": "all"})
+    config.setdefault("access", {"mode": "sandbox", "allowed_paths": []})
+    sc = config.setdefault("scan", {})
+    sc.setdefault("paths", [])
+    sc.setdefault("max_depth", 3)
+    s = config.setdefault("search", {})
+    s.setdefault("max_top_k", DEFAULT_MAX_TOP_K)
+    s.setdefault("bm25_k1", DEFAULT_K1)
+    s.setdefault("bm25_b", DEFAULT_B)
+    s.setdefault("idf_floor", DEFAULT_IDF_FLOOR)
+    config.setdefault("tree", {"sibling_read": True})
+
+    return config
+
+
+# --- Logging ---
+
+def log_change(message, base_dir="."):
+    """Append a line to the audit log."""
+    log_path = os.path.join(base_dir, CHANGES_LOG)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write(f"{ts} {message}\n")
+
+
+# --- Project Discovery ---
+
+def _get_default_scan_paths():
+    """Return default scan paths based on OS."""
+    if platform.system() == "Darwin":
+        return DEFAULT_SCAN_PATHS_MACOS
+    return DEFAULT_SCAN_PATHS_LINUX
+
+
+def _find_projects(scan_paths, max_depth=3, exclude_dir=None):
+    """Walk scan_paths looking for directories containing SCAN_TARGETS files."""
+    projects = {}  # path -> {"name", "path", "files"}
+
+    for scan_root in scan_paths:
+        scan_root = os.path.expanduser(scan_root)
+        if not os.path.isdir(scan_root):
+            continue
+
+        for root, dirs, files in os.walk(scan_root):
+            # Depth check
+            rel = os.path.relpath(root, scan_root)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth > max_depth:
+                dirs.clear()
+                continue
+
+            # Skip hidden and ignored directories
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith('.')]
+
+            # Skip the easybase directory itself
+            if exclude_dir and os.path.abspath(root) == os.path.abspath(exclude_dir):
+                dirs.clear()
+                continue
+
+            # Check for scan target files
+            found = []
+            for target in SCAN_TARGETS:
+                if os.sep in target or '/' in target:
+                    # Nested file like .github/copilot-instructions.md
+                    full = os.path.join(root, target)
+                    if os.path.isfile(full):
+                        found.append(target)
+                elif target in files:
+                    found.append(target)
+
+            if found:
+                abs_root = os.path.abspath(root)
+                if abs_root not in projects:
+                    projects[abs_root] = {
+                        "name": os.path.basename(root),
+                        "path": abs_root,
+                        "files": found,
+                    }
+                else:
+                    # Merge files if same directory found via multiple scan paths
+                    for f in found:
+                        if f not in projects[abs_root]["files"]:
+                            projects[abs_root]["files"].append(f)
+
+    return list(projects.values())
+
+
+def _sanitize_id(name):
+    """Convert a project name to a safe chunk ID component."""
+    sanitized = re.sub(r'[^a-z0-9]', '-', name.lower())
+    sanitized = re.sub(r'-+', '-', sanitized).strip('-')
+    return sanitized[:30] if sanitized else "unknown"
+
+
+def _import_project_file(project, base_dir="."):
+    """Import a found project's files as chunks."""
+    proj_name = project["name"]
+    safe_name = _sanitize_id(proj_name)
+    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
+    knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
+    tree_path = f"projects/{safe_name}"
+    tree_dir = os.path.join(knowledge_dir, tree_path)
+    os.makedirs(tree_dir, exist_ok=True)
+    os.makedirs(chunks_dir, exist_ok=True)
+
+    imported = []
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    for i, filename in enumerate(project["files"]):
+        filepath = os.path.join(project["path"], filename)
+        if not os.path.isfile(filepath):
+            continue
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                body = f.read()
+        except (UnicodeDecodeError, PermissionError):
+            continue
+
+        # Truncate very large files
+        if len(body) > 50000:
+            body = body[:50000] + "\n\n[Truncated — original file exceeds 50KB]"
+
+        # Generate unique chunk ID
+        file_tag = _sanitize_id(filename.replace('.', '-').replace('/', '-'))
+        chunk_id = f"proj-{safe_name}-{file_tag}"
+
+        tags = [filename.replace('/', '-'), "project", "imported"]
+        summary = f"{proj_name} — {filename}"
+
+        lines = ["---"]
+        lines.append(f"id: {chunk_id}")
+        lines.append(f"domain: project")
+        lines.append(f"summary: {summary}")
+        lines.append(f"tags: [{', '.join(tags)}]")
+        lines.append(f"depends: []")
+        lines.append(f"tree_path: {tree_path}")
+        lines.append(f"updated: {today}")
+        lines.append("---")
+        lines.append("")
+        lines.append(body)
+        lines.append("")
+
+        chunk_path = os.path.join(chunks_dir, f"{chunk_id}.md")
+        with open(chunk_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines))
+
+        # Create symlink in knowledge tree
+        link_path = os.path.join(tree_dir, f"{chunk_id}.md")
+        chunk_abs = os.path.abspath(chunk_path)
+        link_abs = os.path.abspath(link_path)
+        rel_target = os.path.relpath(chunk_abs, os.path.dirname(link_abs))
+
+        if os.path.exists(link_path) or os.path.islink(link_path):
+            os.remove(link_path)
+        os.symlink(rel_target, link_path)
+
+        imported.append(chunk_id)
+
+    # Create _summary.md for this project branch
+    if imported:
+        summary_path = os.path.join(tree_dir, "_summary.md")
+        summary_lines = [
+            f"# {proj_name}",
+            "",
+            f"Source: `{project['path']}`",
+            "",
+            "## Imported Files",
+        ]
+        for filename in project["files"]:
+            summary_lines.append(f"- {filename}")
+        summary_lines.append("")
+
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(summary_lines))
+
+    return imported
+
+
+def _import_projects(projects, base_dir="."):
+    """Import multiple projects and save registry."""
+    all_imported = []
+
+    for proj in projects:
+        imported = _import_project_file(proj, base_dir)
+        all_imported.extend(imported)
+        if imported:
+            log_change(f'IMPORT project:{proj["name"]} chunks:{",".join(imported)}', base_dir)
+
+    # Ensure projects/ _summary.md exists
+    projects_tree = os.path.join(base_dir, KNOWLEDGE_DIR, "projects")
+    if os.path.isdir(projects_tree):
+        summary_path = os.path.join(projects_tree, "_summary.md")
+        if not os.path.exists(summary_path):
+            lines = ["# Projects", ""]
+            for proj in projects:
+                lines.append(f"- **{proj['name']}** — `{proj['path']}` ({len(proj['files'])} files)")
+            lines.append("")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(lines))
+
+    # Save projects registry
+    registry = _load_projects_registry(base_dir)
+    today = datetime.now().strftime("%Y-%m-%d")
+    for proj in projects:
+        registry[proj["path"]] = {
+            "name": proj["name"],
+            "path": proj["path"],
+            "files": proj["files"],
+            "imported": today,
+        }
+    _save_projects_registry(registry, base_dir)
+
+    # Rebuild index if any chunks were created
+    if all_imported:
+        build_index(base_dir)
+
+    return all_imported
+
+
+def _load_projects_registry(base_dir="."):
+    """Load projects.json registry."""
+    path = os.path.join(base_dir, PROJECTS_FILE)
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def _save_projects_registry(registry, base_dir="."):
+    """Save projects.json registry."""
+    path = os.path.join(base_dir, PROJECTS_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(registry, f, indent=2)
+
+
 # --- Tokenizer ---
 
 def tokenize(text):
@@ -43,16 +484,13 @@ def tokenize(text):
     text = text.lower()
     tokens = []
 
-    # Chunk IDs: "cbt-003" → "cbt003"
     for match in re.finditer(r"[a-z]{2,5}-\d{2,4}", text):
         tokens.append(match.group().replace("-", ""))
 
-    # Dates: "2026-02-10" → "20260210" + "2026"
     for match in re.finditer(r"\d{4}-\d{2}-\d{2}", text):
         tokens.append(match.group().replace("-", ""))
         tokens.append(match.group()[:4])
 
-    # Standard words, stopwords removed
     for match in re.finditer(r"[a-z][a-z0-9]+", text):
         word = match.group()
         if word not in STOPWORDS and len(word) > 1:
@@ -61,11 +499,11 @@ def tokenize(text):
     return tokens
 
 
-# --- YAML Frontmatter Parser ---
+# --- Chunk Parser ---
 
 def parse_chunk(filepath):
     """Parse a chunk .md file into its components."""
-    with open(filepath, "r", encoding="utf-8") as f:
+    with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
 
     if not content.startswith("---"):
@@ -78,20 +516,18 @@ def parse_chunk(filepath):
     frontmatter = parts[1].strip()
     body = parts[2].strip()
 
-    # Parse YAML frontmatter (simple key: value)
     meta = {}
-    for line in frontmatter.split("\n"):
+    for line in frontmatter.split('\n'):
         line = line.strip()
-        if not line or ":" not in line:
+        if not line or ':' not in line:
             continue
-        key, _, value = line.partition(":")
+        key, _, value = line.partition(':')
         key = key.strip()
         value = value.strip()
-
-        if value.startswith("[") and value.endswith("]"):
+        if value.startswith('[') and value.endswith(']'):
             items = value[1:-1]
             if items.strip():
-                meta[key] = [item.strip().strip("'\"") for item in items.split(",")]
+                meta[key] = [item.strip().strip("'\"") for item in items.split(',')]
             else:
                 meta[key] = []
         else:
@@ -103,14 +539,14 @@ def parse_chunk(filepath):
     domain = meta.get("domain", "")
     date = meta.get("updated", "")
     depends = meta.get("depends", [])
+    tree_path = meta.get("tree_path", "")
 
     if isinstance(tags, str):
         tags = [tags] if tags else []
     if isinstance(depends, str):
         depends = [depends] if depends else []
 
-    # Build searchable text with field weights:
-    # id×3 + summary×2 + tags×1 + domain×1 + date×1 + body×1
+    # Field weighting: id×3, summary×2, tags×1, domain×1, date×1, body×1
     searchable = " ".join([
         " ".join([chunk_id] * 3),
         " ".join([summary] * 2),
@@ -127,6 +563,7 @@ def parse_chunk(filepath):
         "domain": domain,
         "date": date,
         "depends": depends,
+        "tree_path": tree_path,
         "body": body,
         "path": os.path.basename(filepath),
         "searchable": searchable,
@@ -137,18 +574,21 @@ def parse_chunk(filepath):
 
 def build_index(base_dir="."):
     """Build BM25 inverted index from all chunks."""
+    config = load_config(base_dir)
+    k1 = config["search"]["bm25_k1"]
+    b = config["search"]["bm25_b"]
+    idf_floor = config["search"]["idf_floor"]
+
     chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
     if not os.path.isdir(chunks_dir):
         print(f"Error: {chunks_dir} directory not found.")
         sys.exit(1)
 
     chunk_files = sorted(f for f in os.listdir(chunks_dir) if f.endswith(".md"))
-
     if not chunk_files:
         print("Error: No .md files found in chunks/")
         sys.exit(1)
 
-    # Parse all chunks
     chunks = {}
     for fname in chunk_files:
         filepath = os.path.join(chunks_dir, fname)
@@ -160,7 +600,6 @@ def build_index(base_dir="."):
         print("Error: No valid chunks parsed.")
         sys.exit(1)
 
-    # Build inverted index
     inverted = defaultdict(lambda: {"df": 0, "postings": {}})
     doc_lengths = {}
 
@@ -177,12 +616,11 @@ def build_index(base_dir="."):
                 inverted[term]["df"] += 1
             inverted[term]["postings"][chunk_id] = count
 
-    # Compute reference weights from depends fields
     ref_counts = defaultdict(int)
     for chunk_id, chunk in chunks.items():
         for dep in chunk["depends"]:
             dep = dep.strip()
-            if dep and dep != "—":
+            if dep and dep != "\u2014":
                 ref_counts[dep] += 1
 
     ref_weights = {}
@@ -201,13 +639,15 @@ def build_index(base_dir="."):
             "tags": chunk["tags"],
             "date": chunk["date"],
             "path": chunk["path"],
+            "tree_path": chunk["tree_path"],
         }
 
     index = {
         "N": N,
         "avgdl": round(avgdl, 2),
-        "k1": BM25_K1,
-        "b": BM25_B,
+        "k1": k1,
+        "b": b,
+        "idf_floor": idf_floor,
         "doc_lengths": doc_lengths,
         "ref_weights": {k: round(v, 2) for k, v in ref_weights.items()},
         "inverted": {
@@ -218,61 +658,52 @@ def build_index(base_dir="."):
     }
 
     index_path = os.path.join(base_dir, INDEX_FILE)
-    with open(index_path, "w", encoding="utf-8") as f:
+    with open(index_path, 'w', encoding='utf-8') as f:
         json.dump(index, f, indent=2)
 
-    print(f"Indexed {N} chunks, {len(inverted)} unique terms → {INDEX_FILE}")
+    print(f"Indexed {N} chunks, {len(inverted)} unique terms \u2192 {INDEX_FILE}")
 
-    generate_manifest(chunks, base_dir)
+    # On first run, generate root summary if empty
+    root_summary_path = os.path.join(base_dir, KNOWLEDGE_DIR, "_summary.md")
+    if os.path.exists(root_summary_path):
+        with open(root_summary_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+        if not content or content == "# Knowledge Base":
+            _generate_root_summary(chunks, root_summary_path)
+
     return index
 
 
-def generate_manifest(chunks, base_dir="."):
-    """Generate manifest.md from chunk metadata."""
-    domains = set(c["domain"] for c in chunks.values() if c["domain"])
-
-    lines = [
-        "# Easybase Manifest",
-        "",
-        "## Project State",
-        f"Knowledge base with {len(chunks)} chunks across {len(domains)} domains.",
-        "",
-        "## Chunks",
-        "",
-        "| ID | Summary | Depends On |",
-        "|----|---------|------------|",
-    ]
-
+def _generate_root_summary(chunks, summary_path):
+    """Generate initial root _summary.md listing all chunks."""
+    lines = ["# Knowledge Base", ""]
+    lines.append("## Available Details")
+    lines.append("| ID | Summary | Domain |")
+    lines.append("|----|---------|--------|")
     for chunk_id in sorted(chunks.keys()):
-        chunk = chunks[chunk_id]
-        depends = ", ".join(chunk["depends"]) if chunk["depends"] else "—"
-        lines.append(f"| {chunk_id} | {chunk['summary']} | {depends} |")
+        c = chunks[chunk_id]
+        lines.append(f"| {chunk_id} | {c['summary']} | {c['domain']} |")
 
-    lines.append("")
-    lines.append("## Dependency Graph")
-
-    # parent ← children
     parent_to_children = defaultdict(list)
-    for chunk_id, chunk in chunks.items():
-        for dep in chunk["depends"]:
+    for chunk_id, c in chunks.items():
+        for dep in c["depends"]:
             dep = dep.strip()
-            if dep and dep != "—":
+            if dep and dep != "\u2014":
                 parent_to_children[dep].append(chunk_id)
 
     if parent_to_children:
+        lines.append("")
+        lines.append("## Dependencies")
         for parent in sorted(parent_to_children.keys()):
             children = sorted(parent_to_children[parent])
-            lines.append(f"{parent} ← {', '.join(children)}")
-    else:
-        lines.append("(no dependencies)")
+            lines.append(f"{parent} \u2190 {', '.join(children)}")
 
     lines.append("")
 
-    manifest_path = os.path.join(base_dir, MANIFEST_FILE)
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
 
-    print(f"Generated {MANIFEST_FILE}")
+    print(f"Generated root summary: {summary_path}")
 
 
 # --- Search ---
@@ -283,13 +714,15 @@ def load_index(base_dir="."):
     if not os.path.exists(index_path):
         print(f"Error: {INDEX_FILE} not found. Run 'python3 ctx.py index' first.")
         sys.exit(1)
-
-    with open(index_path, "r", encoding="utf-8") as f:
+    with open(index_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 
-def search(query, index, top_k=5, verbose=False):
+def search(query, index, top_k=None, scope=None, verbose=False):
     """Run modified BM25 search."""
+    if top_k is None:
+        top_k = DEFAULT_MAX_TOP_K
+
     tokens = tokenize(query)
     if not tokens:
         return []
@@ -298,9 +731,11 @@ def search(query, index, top_k=5, verbose=False):
     avgdl = index["avgdl"]
     k1 = index["k1"]
     b = index["b"]
+    idf_floor = index.get("idf_floor", DEFAULT_IDF_FLOOR)
     inverted = index["inverted"]
     doc_lengths = index["doc_lengths"]
     ref_weights = index["ref_weights"]
+    chunks_meta = index.get("chunks", {})
 
     scores = defaultdict(float)
 
@@ -315,17 +750,22 @@ def search(query, index, top_k=5, verbose=False):
         postings = entry["postings"]
 
         idf = math.log((N - df + 0.5) / (df + 0.5) + 1)
-        idf = max(idf, IDF_FLOOR)
+        idf = max(idf, idf_floor)
 
         if verbose:
             print(f"  [{token}] df={df}, idf={idf:.3f}, postings={list(postings.keys())}")
 
         for chunk_id, tf in postings.items():
+            # Scope filter
+            if scope:
+                tp = chunks_meta.get(chunk_id, {}).get("tree_path", "")
+                if not tp.startswith(scope):
+                    continue
+
             dl = doc_lengths.get(chunk_id, avgdl)
             tf_sat = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
             scores[chunk_id] += idf * tf_sat
 
-    # Apply reference weights
     for chunk_id in scores:
         w = ref_weights.get(chunk_id, 1.0)
         scores[chunk_id] *= w
@@ -333,7 +773,6 @@ def search(query, index, top_k=5, verbose=False):
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
     results = []
-    chunks_meta = index.get("chunks", {})
     for chunk_id, score in ranked:
         meta = chunks_meta.get(chunk_id, {})
         results.append({
@@ -341,6 +780,7 @@ def search(query, index, top_k=5, verbose=False):
             "score": round(score, 4),
             "summary": meta.get("summary", ""),
             "path": meta.get("path", ""),
+            "tree_path": meta.get("tree_path", ""),
         })
 
     return results
@@ -348,20 +788,268 @@ def search(query, index, top_k=5, verbose=False):
 
 # --- CLI Commands ---
 
+def _create_default_soul(soul_path):
+    """Create a default soul.md template."""
+    lines = [
+        "# Soul",
+        "",
+        "## About Me",
+        "<!-- Describe yourself: role, expertise, what you work on. -->",
+        "<!-- The AI reads this first every session to understand who you are. -->",
+        "",
+        "## Preferences",
+        "<!-- How should the AI communicate? What style do you prefer? -->",
+        "<!-- Examples: concise vs detailed, formal vs casual, code-first vs explanation-first -->",
+        "",
+        "## Current Focus",
+        "<!-- What are you currently working on? What are your priorities? -->",
+        "",
+        "## Notes for AI",
+        "<!-- Anything the AI should always keep in mind when working with you. -->",
+        "",
+    ]
+    with open(soul_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+
+def cmd_init(base_dir="."):
+    """Interactive setup — generates config.yaml and directory structure."""
+    abs_base = os.path.abspath(base_dir)
+
+    print("Easybase Setup")
+    print("==============")
+    print()
+
+    # --- Phase 1: Identity ---
+    print("Phase 1: Identity")
+    print("-" * 30)
+    owner = input("Your name: ").strip()
+    owner_role = input("Your role (e.g., developer, researcher, student): ").strip()
+
+    print()
+    print("Easybase uses a soul.md file for your general context (preferences,")
+    print("background, how the AI should work with you). This is loaded first,")
+    print("before any project-specific knowledge.")
+    print()
+    print("Do you already have a user profile file (e.g., CLAUDE.md, soul.md, .cursorrules)?")
+    print("  [1] No \u2014 create a new soul.md for me")
+    print("  [2] Yes \u2014 I have an existing file I want to use")
+    soul_choice = input("Choice [1]: ").strip() or "1"
+
+    soul_path = os.path.join(base_dir, SOUL_FILE)
+    if soul_choice == "2":
+        existing_path = input("Path to your existing file: ").strip()
+        existing_path = os.path.expanduser(existing_path)
+        if os.path.exists(existing_path):
+            with open(existing_path, 'r', encoding='utf-8') as f:
+                existing_content = f.read()
+            with open(soul_path, 'w', encoding='utf-8') as f:
+                f.write(existing_content)
+            print(f"  Imported {existing_path} \u2192 {SOUL_FILE}")
+        else:
+            print(f"  File not found: {existing_path}")
+            print(f"  Creating a blank {SOUL_FILE} instead.")
+            _create_default_soul(soul_path)
+    else:
+        _create_default_soul(soul_path)
+
+    # --- Phase 2: Knowledge Base ---
+    print()
+    print("Phase 2: Knowledge Base")
+    print("-" * 30)
+    name = input("Knowledge base name: ").strip() or "My Knowledge Base"
+    description = input("Description: ").strip()
+
+    print()
+    print("What should the AI store?")
+    print("  [1] Everything (recommended \u2014 search handles relevance)")
+    print("  [2] AI decides what's worth keeping")
+    print("  [3] Only when I explicitly ask")
+    storage_choice = input("Choice [1]: ").strip() or "1"
+    storage_map = {"1": "all", "2": "selective", "3": "manual"}
+    storage_mode = storage_map.get(storage_choice, "all")
+
+    print()
+    max_top_k_str = input(f"Maximum chunks to retrieve per search [default {DEFAULT_MAX_TOP_K}]: ").strip()
+    max_top_k = int(max_top_k_str) if max_top_k_str.isdigit() else DEFAULT_MAX_TOP_K
+
+    # --- Phase 3: Project Discovery ---
+    print()
+    print("Phase 3: Project Discovery")
+    print("-" * 30)
+    print("Easybase can scan your machine for existing projects by looking for")
+    print("AI context files (CLAUDE.md, .cursorrules, README.md, etc.).")
+    print("Found projects are imported as searchable knowledge chunks.")
+    print()
+    print("Should Easybase scan for existing projects?")
+    print("  [1] No \u2014 I'll add knowledge manually")
+    print("  [2] Yes \u2014 scan my machine for projects")
+    scan_choice = input("Choice [1]: ").strip() or "1"
+
+    access_mode = "sandbox"
+    scan_paths = []
+    imported_projects = []
+
+    if scan_choice == "2":
+        access_mode = "local-read"
+        defaults = _get_default_scan_paths()
+        existing = [p for p in defaults if os.path.isdir(os.path.expanduser(p))]
+
+        print()
+        if existing:
+            print("Found these common directories on your machine:")
+            for i, p in enumerate(existing, 1):
+                print(f"  [{i}] {p}")
+            print()
+            print("Use these paths? (Enter to accept, or type custom paths separated by commas)")
+            custom = input(f"Paths [{', '.join(existing)}]: ").strip()
+            if custom:
+                scan_paths = [p.strip() for p in custom.split(",") if p.strip()]
+            else:
+                scan_paths = existing
+        else:
+            print("Enter paths to scan (separated by commas):")
+            custom = input("Paths: ").strip()
+            scan_paths = [p.strip() for p in custom.split(",") if p.strip()]
+
+        if scan_paths:
+            print()
+            print("Scanning...")
+            found = _find_projects(scan_paths, max_depth=3, exclude_dir=abs_base)
+
+            if found:
+                print(f"Found {len(found)} project(s):")
+                for i, proj in enumerate(found, 1):
+                    files_str = ", ".join(proj["files"])
+                    print(f"  [{i}] {proj['name']} \u2014 {proj['path']}")
+                    print(f"      Files: {files_str}")
+
+                print()
+                print("Import which projects?")
+                print("  [a] All")
+                print("  [n] None")
+                print("  Or enter numbers separated by commas (e.g., 1,3,5)")
+                import_choice = input("Choice [a]: ").strip().lower() or "a"
+
+                if import_choice == "n":
+                    found = []
+                elif import_choice != "a":
+                    try:
+                        indices = [int(x.strip()) - 1 for x in import_choice.split(",")]
+                        found = [found[i] for i in indices if 0 <= i < len(found)]
+                    except (ValueError, IndexError):
+                        print("  Invalid selection, importing all.")
+
+                imported_projects = found
+            else:
+                print("No projects found in the specified paths.")
+
+    # --- Create directories and files ---
+    dirs_to_create = [
+        os.path.join(base_dir, CHUNKS_DIR),
+        os.path.join(base_dir, KNOWLEDGE_DIR),
+        os.path.join(base_dir, INBOX_DIR, "sessions"),
+        os.path.join(base_dir, INBOX_DIR, "files"),
+        os.path.join(base_dir, INBOX_DIR, "processed"),
+        os.path.join(base_dir, LOGS_DIR),
+    ]
+    for d in dirs_to_create:
+        os.makedirs(d, exist_ok=True)
+
+    # Create root summary
+    root_summary = os.path.join(base_dir, KNOWLEDGE_DIR, "_summary.md")
+    if not os.path.exists(root_summary):
+        with open(root_summary, 'w', encoding='utf-8') as f:
+            f.write("# Knowledge Base\n")
+
+    # Create empty changes log
+    log_path = os.path.join(base_dir, CHANGES_LOG)
+    if not os.path.exists(log_path):
+        with open(log_path, 'w', encoding='utf-8') as f:
+            pass
+
+    # Generate config
+    config = _default_config(
+        name=name, description=description, storage_mode=storage_mode,
+        access_mode=access_mode, max_top_k=max_top_k,
+        owner=owner, owner_role=owner_role, scan_paths=scan_paths,
+    )
+    config_path = os.path.join(base_dir, CONFIG_FILE)
+    with open(config_path, 'w', encoding='utf-8') as f:
+        f.write(generate_yaml(config))
+
+    # Import projects if any were selected
+    if imported_projects:
+        print()
+        print("Importing projects...")
+        all_imported = _import_projects(imported_projects, base_dir)
+        print(f"  Imported {len(all_imported)} chunk(s) from {len(imported_projects)} project(s).")
+
+    log_change("INIT setup completed", base_dir)
+
+    # --- Phase 4: Confirmation ---
+    print()
+    print("Summary")
+    print("=" * 40)
+    print()
+    print("Permissions:")
+    if access_mode == "local-read":
+        print(f"  READ:  inside easybase/ + {scan_paths}")
+        print(f"  WRITE: inside easybase/ only")
+    else:
+        print(f"  READ:  inside easybase/ only")
+        print(f"  WRITE: inside easybase/ only")
+    print()
+    print("Your data is stored at:")
+    print(f"  Chunks:    {os.path.join(abs_base, CHUNKS_DIR)}/")
+    print(f"  Knowledge: {os.path.join(abs_base, KNOWLEDGE_DIR)}/")
+    print(f"  Logs:      {os.path.join(abs_base, LOGS_DIR)}/")
+    print(f"  Config:    {os.path.join(abs_base, CONFIG_FILE)}")
+    print(f"  Soul:      {os.path.join(abs_base, SOUL_FILE)}")
+    print()
+    print("Created:")
+    print(f"  {SOUL_FILE}")
+    print(f"  {CONFIG_FILE}")
+    print(f"  {KNOWLEDGE_DIR}/_summary.md")
+    print(f"  {CHUNKS_DIR}/")
+    print(f"  {INBOX_DIR}/sessions/")
+    print(f"  {INBOX_DIR}/files/")
+    print(f"  {INBOX_DIR}/processed/")
+    print(f"  {LOGS_DIR}/{os.path.basename(CHANGES_LOG)}")
+    if imported_projects:
+        print(f"  {len(imported_projects)} imported project(s)")
+    print()
+    print("Next steps:")
+    print("  1. Edit soul.md to describe yourself and your preferences")
+    print('  2. Run: python3 ctx.py load "your question"')
+    print()
+    print("The soul.md and protocol are automatically included in every load output.")
+
+
+def cmd_index(base_dir="."):
+    """Build index from chunks."""
+    build_index(base_dir)
+
+
 def cmd_search(args, base_dir="."):
     """Search for chunks by query."""
     if not args:
-        print("Usage: python3 ctx.py search \"query\" [--top N] [-v]")
+        print('Usage: python3 ctx.py search "query" [--top N] [--scope path] [-v]')
         sys.exit(1)
 
     query = args[0]
-    top_k = 5
+    config = load_config(base_dir)
+    top_k = config["search"]["max_top_k"]
+    scope = None
     verbose = False
 
     i = 1
     while i < len(args):
         if args[i] == "--top" and i + 1 < len(args):
             top_k = int(args[i + 1])
+            i += 2
+        elif args[i] == "--scope" and i + 1 < len(args):
+            scope = args[i + 1]
             i += 2
         elif args[i] == "-v":
             verbose = True
@@ -370,66 +1058,161 @@ def cmd_search(args, base_dir="."):
             i += 1
 
     index = load_index(base_dir)
-    results = search(query, index, top_k=top_k, verbose=verbose)
+    results = search(query, index, top_k=top_k, scope=scope, verbose=verbose)
 
     if not results:
         print("No results found.")
         return
 
-    print(f"\nSearch: \"{query}\"")
+    print(f'\nSearch: "{query}"')
+    if scope:
+        print(f"Scope: {scope}")
     print(f"{'Rank':<6}{'ID':<12}{'Score':<10}{'Summary'}")
-    print("-" * 60)
+    print("-" * 70)
     for rank, r in enumerate(results, 1):
         print(f"{rank:<6}{r['id']:<12}{r['score']:<10}{r['summary']}")
 
 
+def _auto_capture(content, msg_type, base_dir="."):
+    """Automatically capture a query or response to inbox/sessions/."""
+    sessions_dir = os.path.join(base_dir, INBOX_DIR, "sessions")
+    os.makedirs(sessions_dir, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    ts_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{ts_file}_{msg_type}.md"
+    filepath = os.path.join(sessions_dir, filename)
+
+    lines = [
+        "---",
+        f"type: {msg_type}",
+        f"timestamp: {ts}",
+        "---",
+        "",
+        content,
+        "",
+    ]
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write("\n".join(lines))
+
+    log_change(f"CAPTURE {msg_type}:{filename}", base_dir)
+
+
+def _check_project_freshness(base_dir="."):
+    """Check if any imported project files have changed since import."""
+    registry = _load_projects_registry(base_dir)
+    if not registry:
+        return []
+
+    stale = []
+    for path, info in registry.items():
+        import_date = info.get("imported", "")
+        if not import_date:
+            continue
+        for filename in info.get("files", []):
+            filepath = os.path.join(path, filename)
+            if not os.path.isfile(filepath):
+                continue
+            mtime = datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d")
+            if mtime > import_date:
+                stale.append({
+                    "project": info["name"],
+                    "file": filename,
+                    "modified": mtime,
+                    "imported": import_date,
+                })
+
+    return stale
+
+
 def cmd_load(args, base_dir="."):
-    """Search + display full chunk content for LLM context."""
+    """Search + display full context block with protocol."""
     if not args:
-        print("Usage: python3 ctx.py load \"query\" [--top N]")
+        print('Usage: python3 ctx.py load "query" [--top N] [--scope path]')
         sys.exit(1)
 
     query = args[0]
-    top_k = 3
+    config = load_config(base_dir)
+    top_k = config["search"]["max_top_k"]
+    scope = None
 
     i = 1
     while i < len(args):
         if args[i] == "--top" and i + 1 < len(args):
             top_k = int(args[i + 1])
             i += 2
+        elif args[i] == "--scope" and i + 1 < len(args):
+            scope = args[i + 1]
+            i += 2
         else:
             i += 1
 
+    # Auto-capture the user's query
+    _auto_capture(query, "query", base_dir)
+
     index = load_index(base_dir)
-    results = search(query, index, top_k=top_k)
+    results = search(query, index, top_k=top_k, scope=scope)
+
+    print("[CONTEXT]")
+
+    # Always include soul.md first — user-level context
+    soul_path = os.path.join(base_dir, SOUL_FILE)
+    if os.path.exists(soul_path):
+        with open(soul_path, 'r', encoding='utf-8') as f:
+            soul_content = f.read().rstrip()
+        if soul_content:
+            print(soul_content)
+            print()
+
+    # Always include protocol
+    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
+    if os.path.exists(protocol_path):
+        with open(protocol_path, 'r', encoding='utf-8') as f:
+            print(f.read().rstrip())
+        print()
+
+    # Include path summaries
+    if scope:
+        # Read _summary.md files along the scope path
+        parts = scope.strip("/").split("/")
+        for depth in range(len(parts)):
+            partial = os.path.join(*parts[:depth + 1])
+            summary_path = os.path.join(base_dir, KNOWLEDGE_DIR, partial, "_summary.md")
+            if os.path.exists(summary_path):
+                print(f"# Path Summary: {partial}")
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    print(f.read().rstrip())
+                print()
+    else:
+        # First call of session: include root summary
+        root_summary = os.path.join(base_dir, KNOWLEDGE_DIR, "_summary.md")
+        if os.path.exists(root_summary):
+            print("# Root Summary")
+            with open(root_summary, 'r', encoding='utf-8') as f:
+                print(f.read().rstrip())
+            print()
 
     if not results:
-        print("No results found.")
+        print("# Retrieved Chunks (0 results)")
+        _print_stale_projects(base_dir)
+        print("[/CONTEXT]")
         return
 
-    # Load chunk files and estimate tokens
-    total_tokens = 0
-    chunk_contents = []
+    # Load chunk bodies
     chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
-
+    chunk_contents = []
     for r in results:
         filepath = os.path.join(chunks_dir, r["path"])
         if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8") as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
             chunk_contents.append((r, content))
-            total_tokens += len(content) // 4
         else:
             chunk_contents.append((r, f"[File not found: {r['path']}]"))
 
-    ids = ", ".join(r["id"] for r in results)
-    print(f"TASK: {query}")
-    print(f"LOADED: {ids}")
-    print(f"CHUNKS: {len(results)} | ~{total_tokens} tokens")
-
+    print(f"# Retrieved Chunks ({len(results)} results)")
     for r, content in chunk_contents:
-        print(f"\n── {r['id']} | {r['summary']} | score={r['score']} ──")
-        # Print body only (skip frontmatter)
+        print(f"\n\u2500\u2500 {r['id']} | {r['summary']} | score={r['score']} \u2500\u2500")
         if content.startswith("---"):
             parts = content.split("---", 2)
             if len(parts) >= 3:
@@ -440,16 +1223,27 @@ def cmd_load(args, base_dir="."):
             print(content)
 
     # Cross-references
-    print(f"\n── Cross-References ──")
+    print(f"\n# Cross-References")
     for r, content in chunk_contents:
-        refs = []
         for line in content.split("\n"):
             stripped = line.strip()
-            if stripped.startswith("→ see:") or stripped.startswith("-> see:"):
-                refs.append(stripped)
-        if refs:
-            for ref in refs:
-                print(f"{r['id']} {ref}")
+            if stripped.startswith("\u2192 see:") or stripped.startswith("-> see:"):
+                print(f"{r['id']} {stripped}")
+                break
+
+    _print_stale_projects(base_dir)
+    print("[/CONTEXT]")
+
+
+def _print_stale_projects(base_dir="."):
+    """Print stale project warnings if any."""
+    stale = _check_project_freshness(base_dir)
+    if stale:
+        print("\n# Stale Projects")
+        print("The following imported projects have changed since import:")
+        for s in stale:
+            print(f"  - {s['project']} ({s['file']} modified {s['modified']}, imported {s['imported']})")
+        print("Run `ctx.py scan` to re-import.")
 
 
 def cmd_add(args, base_dir="."):
@@ -460,6 +1254,7 @@ def cmd_add(args, base_dir="."):
     domain = ""
     tags = ""
     depends = ""
+    tree_path = ""
 
     i = 0
     while i < len(args):
@@ -481,20 +1276,21 @@ def cmd_add(args, base_dir="."):
         elif args[i] == "--depends" and i + 1 < len(args):
             depends = args[i + 1]
             i += 2
+        elif args[i] == "--tree-path" and i + 1 < len(args):
+            tree_path = args[i + 1]
+            i += 2
         else:
             i += 1
 
     if not chunk_id or not summary:
-        print("Usage: python3 ctx.py add --id ID --summary \"...\" --body \"...\" "
-              "[--domain DOMAIN] [--tags \"t1,t2\"] [--depends \"id1,id2\"]")
+        print('Usage: python3 ctx.py add --id ID --summary "..." --body "..."')
+        print('  [--domain DOMAIN] [--tags "t1,t2"] [--depends "id1,id2"]')
+        print('  [--tree-path "path/to/branch"]')
         sys.exit(1)
 
     tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     depends_list = [d.strip() for d in depends.split(",") if d.strip()] if depends else []
-
-    from datetime import date
-    today = date.today().isoformat()
-    token_est = len(body) // 4 if body else 0
+    today = datetime.now().strftime("%Y-%m-%d")
 
     lines = ["---"]
     lines.append(f"id: {chunk_id}")
@@ -505,14 +1301,16 @@ def cmd_add(args, base_dir="."):
         lines.append(f"tags: [{', '.join(tags_list)}]")
     if depends_list:
         lines.append(f"depends: [{', '.join(depends_list)}]")
+    if tree_path:
+        lines.append(f"tree_path: {tree_path}")
     lines.append(f"updated: {today}")
-    lines.append(f"tokens: ~{token_est}")
     lines.append("---")
     lines.append("")
     if body:
         lines.append(body)
     lines.append("")
 
+    # Write chunk file
     chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
     os.makedirs(chunks_dir, exist_ok=True)
     filepath = os.path.join(chunks_dir, f"{chunk_id}.md")
@@ -520,15 +1318,91 @@ def cmd_add(args, base_dir="."):
     if os.path.exists(filepath):
         print(f"Warning: {filepath} already exists. Overwriting.")
 
-    with open(filepath, "w", encoding="utf-8") as f:
+    with open(filepath, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines))
 
     print(f"Created {filepath}")
+
+    # Create symlink in knowledge tree if tree_path provided
+    if tree_path:
+        knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
+        tree_dir = os.path.join(knowledge_dir, tree_path)
+        os.makedirs(tree_dir, exist_ok=True)
+
+        link_path = os.path.join(tree_dir, f"{chunk_id}.md")
+        chunk_abs = os.path.abspath(filepath)
+        link_abs = os.path.abspath(link_path)
+        rel_target = os.path.relpath(chunk_abs, os.path.dirname(link_abs))
+
+        if os.path.exists(link_path) or os.path.islink(link_path):
+            os.remove(link_path)
+        os.symlink(rel_target, link_path)
+        print(f"Linked {link_path} \u2192 {rel_target}")
+
+    # Log the operation
+    tree_info = f" tree:{tree_path}" if tree_path else ""
+    log_change(f'ADD {chunk_id} "{summary}"{tree_info}', base_dir)
+
+    # Rebuild index
     build_index(base_dir)
 
 
+def cmd_ingest(base_dir="."):
+    """Process files in inbox/ for AI review."""
+    inbox_sessions = os.path.join(base_dir, INBOX_DIR, "sessions")
+    inbox_files = os.path.join(base_dir, INBOX_DIR, "files")
+    processed_dir = os.path.join(base_dir, INBOX_DIR, "processed")
+    os.makedirs(processed_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    found = False
+
+    # Process session logs
+    if os.path.isdir(inbox_sessions):
+        for fname in sorted(os.listdir(inbox_sessions)):
+            fpath = os.path.join(inbox_sessions, fname)
+            if not os.path.isfile(fpath):
+                continue
+            found = True
+
+            print(f"\n{'='*60}")
+            print(f"SESSION LOG: {fname}")
+            print(f"{'='*60}")
+            with open(fpath, 'r', encoding='utf-8') as f:
+                print(f.read())
+
+            dest = os.path.join(processed_dir, f"{timestamp}_{fname}")
+            shutil.move(fpath, dest)
+            print(f"\n[Moved to {dest}]")
+            log_change(f"INGEST session:{fname}", base_dir)
+
+    # Process files
+    if os.path.isdir(inbox_files):
+        for fname in sorted(os.listdir(inbox_files)):
+            fpath = os.path.join(inbox_files, fname)
+            if not os.path.isfile(fpath):
+                continue
+            found = True
+
+            print(f"\n{'='*60}")
+            print(f"FILE: {fname}")
+            print(f"{'='*60}")
+            with open(fpath, 'r', encoding='utf-8') as f:
+                print(f.read())
+
+            dest = os.path.join(processed_dir, f"{timestamp}_{fname}")
+            shutil.move(fpath, dest)
+            print(f"\n[Moved to {dest}]")
+            log_change(f"INGEST file:{fname}", base_dir)
+
+    if not found:
+        print("No files to process in inbox/.")
+    else:
+        print(f"\nAll files processed. Review the output above and create chunks with ctx.py add.")
+
+
 def cmd_stats(base_dir="."):
-    """Show index statistics."""
+    """Show index and tree statistics."""
     index = load_index(base_dir)
 
     N = index["N"]
@@ -536,27 +1410,54 @@ def cmd_stats(base_dir="."):
     avgdl = index["avgdl"]
 
     unique_terms = len(inverted)
-
     posting_lengths = [entry["df"] for entry in inverted.values()]
     avg_posting = sum(posting_lengths) / len(posting_lengths) if posting_lengths else 0
     max_entry = max(inverted.items(), key=lambda x: x[1]["df"]) if inverted else ("", {"df": 0})
-
     df1_count = sum(1 for entry in inverted.values() if entry["df"] == 1)
-
     sorted_by_df_desc = sorted(inverted.items(), key=lambda x: x[1]["df"], reverse=True)[:5]
     sorted_by_df_asc = sorted(inverted.items(), key=lambda x: x[1]["df"])[:3]
 
+    idf_floor = index.get("idf_floor", DEFAULT_IDF_FLOOR)
+
     def compute_idf(df):
-        idf = math.log((N - df + 0.5) / (df + 0.5) + 1)
-        return max(idf, IDF_FLOOR)
+        return max(math.log((N - df + 0.5) / (df + 0.5) + 1), idf_floor)
+
+    # Tree stats
+    knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
+    tree_depth = 0
+    summary_count = 0
+    max_summary_tokens = 0
+    max_summary_path = ""
+
+    if os.path.isdir(knowledge_dir):
+        for root, dirs, files in os.walk(knowledge_dir):
+            rel = os.path.relpath(root, knowledge_dir)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth > tree_depth:
+                tree_depth = depth
+            for fname in files:
+                if fname == "_summary.md":
+                    summary_count += 1
+                    fpath = os.path.join(root, fname)
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    est_tokens = len(content) // 4
+                    if est_tokens > max_summary_tokens:
+                        max_summary_tokens = est_tokens
+                        max_summary_path = os.path.relpath(fpath, base_dir)
 
     print("=== Easybase Index Stats ===")
     print(f"Chunks (N):          {N}")
     print(f"Unique terms:        {unique_terms}")
     print(f"Avg doc length:      {avgdl:.1f} tokens")
     print(f"Avg posting length:  {avg_posting:.2f}")
-    print(f"Max posting list:    \"{max_entry[0]}\" (df={max_entry[1]['df']})")
+    print(f'Max posting list:    "{max_entry[0]}" (df={max_entry[1]["df"]})')
     print(f"Terms with df=1:     {df1_count}")
+
+    print(f"\nTree depth:          {tree_depth}")
+    print(f"Summary files:       {summary_count}")
+    if max_summary_path:
+        print(f"Largest summary:     {max_summary_path} (~{max_summary_tokens} tokens)")
 
     print("\nTop-5 highest df terms:")
     for term, entry in sorted_by_df_desc:
@@ -567,33 +1468,312 @@ def cmd_stats(base_dir="."):
         print(f"  {term:<20} df={entry['df']:<4} idf={compute_idf(entry['df']):.3f}")
 
 
+def cmd_check(base_dir="."):
+    """Validate system integrity."""
+    issues = []
+
+    # Check config.yaml
+    config_path = os.path.join(base_dir, CONFIG_FILE)
+    if not os.path.exists(config_path):
+        issues.append("WARNING: config.yaml not found. Run 'python3 ctx.py init'.")
+    else:
+        try:
+            load_config(base_dir)
+        except Exception as e:
+            issues.append(f"ERROR: config.yaml is invalid: {e}")
+
+    # Check index.json exists and matches chunks
+    chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
+    index_path = os.path.join(base_dir, INDEX_FILE)
+
+    chunk_files = set()
+    if os.path.isdir(chunks_dir):
+        chunk_files = {f for f in os.listdir(chunks_dir) if f.endswith(".md")}
+
+    if not os.path.exists(index_path):
+        if chunk_files:
+            issues.append("WARNING: index.json not found but chunks exist. Run 'python3 ctx.py index'.")
+    else:
+        with open(index_path, 'r', encoding='utf-8') as f:
+            index = json.load(f)
+        indexed_chunks = set(index.get("chunks", {}).keys())
+        # Check each chunk file has valid frontmatter
+        for fname in sorted(chunk_files):
+            filepath = os.path.join(chunks_dir, fname)
+            chunk = parse_chunk(filepath)
+            if chunk is None:
+                issues.append(f"ERROR: {fname} has invalid frontmatter")
+            elif not chunk["id"]:
+                issues.append(f"ERROR: {fname} missing 'id' field")
+            elif not chunk["summary"]:
+                issues.append(f"WARNING: {fname} missing 'summary' field")
+
+        # Check index matches current chunk files
+        actual_ids = set()
+        for fname in chunk_files:
+            c = parse_chunk(os.path.join(chunks_dir, fname))
+            if c and c["id"]:
+                actual_ids.add(c["id"])
+
+        stale = indexed_chunks - actual_ids
+        missing = actual_ids - indexed_chunks
+        if stale:
+            issues.append(f"WARNING: Index contains chunks not on disk: {', '.join(sorted(stale))}")
+        if missing:
+            issues.append(f"WARNING: Chunks on disk not in index: {', '.join(sorted(missing))}. Run 'python3 ctx.py index'.")
+
+    # Check depends references
+    all_ids = set()
+    all_depends = defaultdict(list)
+    if os.path.isdir(chunks_dir):
+        for fname in sorted(chunk_files):
+            c = parse_chunk(os.path.join(chunks_dir, fname))
+            if c and c["id"]:
+                all_ids.add(c["id"])
+                for dep in c["depends"]:
+                    dep = dep.strip()
+                    if dep and dep != "\u2014":
+                        all_depends[c["id"]].append(dep)
+
+    for chunk_id, deps in all_depends.items():
+        for dep in deps:
+            if dep not in all_ids:
+                issues.append(f"WARNING: {chunk_id} depends on '{dep}' which does not exist")
+
+    # Check symlinks in knowledge/
+    knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
+    if os.path.isdir(knowledge_dir):
+        for root, dirs, files in os.walk(knowledge_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                if os.path.islink(fpath):
+                    target = os.path.realpath(fpath)
+                    if not os.path.exists(target):
+                        rel = os.path.relpath(fpath, base_dir)
+                        issues.append(f"ERROR: Broken symlink: {rel} \u2192 {target}")
+                if fname == "_summary.md":
+                    with open(fpath, 'r', encoding='utf-8') as f:
+                        content = f.read().strip()
+                    if not content:
+                        rel = os.path.relpath(fpath, base_dir)
+                        issues.append(f"WARNING: Empty summary: {rel}")
+
+    # Check soul.md
+    soul_path = os.path.join(base_dir, SOUL_FILE)
+    if not os.path.exists(soul_path):
+        issues.append("WARNING: soul.md not found. Run 'python3 ctx.py init'.")
+
+    # Check PROTOCOL.md
+    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
+    if not os.path.exists(protocol_path):
+        issues.append("WARNING: PROTOCOL.md not found")
+
+    # Report
+    if issues:
+        for issue in issues:
+            print(issue)
+        print(f"\n{len(issues)} issue(s) found.")
+        sys.exit(1)
+    else:
+        print("All checks passed.")
+        sys.exit(0)
+
+
+def cmd_record(args, base_dir="."):
+    """Record session content into inbox for later processing."""
+    content = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--content" and i + 1 < len(args):
+            content = args[i + 1]
+            i += 2
+        elif args[i] == "--file" and i + 1 < len(args):
+            filepath = os.path.expanduser(args[i + 1])
+            if not os.path.isfile(filepath):
+                print(f"Error: File not found: {filepath}")
+                sys.exit(1)
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            i += 2
+        else:
+            i += 1
+
+    # Read from stdin if no content or file provided
+    if content is None:
+        if not sys.stdin.isatty():
+            content = sys.stdin.read()
+        else:
+            print('Usage: python3 ctx.py record --content "session text"')
+            print('       python3 ctx.py record --file /path/to/session.log')
+            print('       echo "text" | python3 ctx.py record')
+            sys.exit(1)
+
+    if not content.strip():
+        print("Error: No content to record.")
+        sys.exit(1)
+
+    sessions_dir = os.path.join(base_dir, INBOX_DIR, "sessions")
+    os.makedirs(sessions_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{timestamp}.md"
+    filepath = os.path.join(sessions_dir, filename)
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+    log_change(f"RECORD session:{filename}", base_dir)
+    print(f"Recorded session: {filepath}")
+
+
+def cmd_respond(args, base_dir="."):
+    """Record AI response — called after answering the user."""
+    content = None
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--file" and i + 1 < len(args):
+            filepath = os.path.expanduser(args[i + 1])
+            if not os.path.isfile(filepath):
+                print(f"Error: File not found: {filepath}")
+                sys.exit(1)
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            i += 2
+        else:
+            # Treat first positional arg as the response content
+            if content is None:
+                content = args[i]
+            i += 1
+
+    # Read from stdin if no content provided
+    if content is None:
+        if not sys.stdin.isatty():
+            content = sys.stdin.read()
+        else:
+            print('Usage: python3 ctx.py respond "AI response text"')
+            print('       python3 ctx.py respond --file /path/to/response.txt')
+            print('       echo "response" | python3 ctx.py respond')
+            sys.exit(1)
+
+    if not content.strip():
+        print("Error: No content to record.")
+        sys.exit(1)
+
+    _auto_capture(content, "response", base_dir)
+    print("Response recorded.")
+
+
+def cmd_scan(args, base_dir="."):
+    """Re-scan for projects after initial setup."""
+    abs_base = os.path.abspath(base_dir)
+    config = load_config(base_dir)
+
+    # Get scan paths from args or config
+    scan_paths = config.get("scan", {}).get("paths", [])
+    max_depth = config.get("scan", {}).get("max_depth", 3)
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--paths" and i + 1 < len(args):
+            scan_paths = [p.strip() for p in args[i + 1].split(",") if p.strip()]
+            i += 2
+        else:
+            i += 1
+
+    if not scan_paths:
+        print("No scan paths configured. Run 'python3 ctx.py init' with project scanning,")
+        print("or use: python3 ctx.py scan --paths \"~/code,~/projects\"")
+        sys.exit(1)
+
+    print(f"Scanning: {', '.join(scan_paths)}")
+    found = _find_projects(scan_paths, max_depth=max_depth, exclude_dir=abs_base)
+
+    # Filter out already-imported projects
+    registry = _load_projects_registry(base_dir)
+    new_projects = [p for p in found if p["path"] not in registry]
+
+    if not new_projects:
+        print(f"Found {len(found)} project(s), all already imported.")
+        return
+
+    print(f"Found {len(new_projects)} new project(s):")
+    for i_proj, proj in enumerate(new_projects, 1):
+        files_str = ", ".join(proj["files"])
+        print(f"  [{i_proj}] {proj['name']} \u2014 {proj['path']}")
+        print(f"      Files: {files_str}")
+
+    print()
+    print("Import which projects?")
+    print("  [a] All")
+    print("  [n] None")
+    print("  Or enter numbers separated by commas (e.g., 1,3,5)")
+    import_choice = input("Choice [a]: ").strip().lower() or "a"
+
+    if import_choice == "n":
+        print("No projects imported.")
+        return
+    elif import_choice != "a":
+        try:
+            indices = [int(x.strip()) - 1 for x in import_choice.split(",")]
+            new_projects = [new_projects[idx] for idx in indices if 0 <= idx < len(new_projects)]
+        except (ValueError, IndexError):
+            print("  Invalid selection, importing all.")
+
+    print("Importing...")
+    all_imported = _import_projects(new_projects, base_dir)
+    print(f"Imported {len(all_imported)} chunk(s) from {len(new_projects)} project(s).")
+
+
 # --- Main ---
 
 def main():
     if len(sys.argv) < 2:
-        print("Easybase — BM25-based context management")
+        print("Easybase \u2014 BM25-based context management for AI")
         print()
         print("Commands:")
-        print("  index                          Build index + manifest from chunks/")
-        print("  search \"query\" [--top N] [-v]   Search for chunks")
-        print("  load \"query\" [--top N]          Search + load full chunk content")
-        print("  add --id ID --summary \"...\"     Add a new chunk")
-        print("  stats                          Show index statistics")
+        print("  init                               Interactive setup")
+        print('  index                              Build index from chunks/')
+        print('  search "query" [--top N] [-v]      Search for chunks')
+        print('         [--scope path]')
+        print('  load "query" [--top N]             Search + full context block')
+        print('       [--scope path]')
+        print('  add --id ID --summary "..."         Add a new chunk')
+        print('      [--tree-path "path"]')
+        print("  ingest                             Process inbox/ files")
+        print('  record --content "text"            Record a session')
+        print('  respond "AI answer"                Record AI response')
+        print("  scan [--paths ...]                 Re-scan for projects")
+        print("  stats                              Show index statistics")
+        print("  check                              Validate system integrity")
         sys.exit(0)
 
     cmd = sys.argv[1]
     args = sys.argv[2:]
 
-    if cmd == "index":
-        build_index()
+    if cmd == "init":
+        cmd_init()
+    elif cmd == "index":
+        cmd_index()
     elif cmd == "search":
         cmd_search(args)
     elif cmd == "load":
         cmd_load(args)
     elif cmd == "add":
         cmd_add(args)
+    elif cmd == "ingest":
+        cmd_ingest()
+    elif cmd == "record":
+        cmd_record(args)
+    elif cmd == "respond":
+        cmd_respond(args)
+    elif cmd == "scan":
+        cmd_scan(args)
     elif cmd == "stats":
         cmd_stats()
+    elif cmd == "check":
+        cmd_check()
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
