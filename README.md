@@ -14,8 +14,8 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 
 - **All useful information, nothing else** — Relevant chunks are loaded in full. Everything outside the query's scope is abstracted in tree summaries — present as structure, not as noise.
 - **User-first context** — soul.md gives the AI your background and preferences before any project knowledge.
-- **Zero dependencies** — Single Python file, standard library only.
-- **Works with any MCP-capable AI** — Claude Desktop, Claude Code, Cursor, Windsurf.
+- **Zero dependencies** — Core engine is a single Python file using only the standard library. MCP server requires one package (`mcp`).
+- **Works with any AI** — MCP server for Claude/Cursor, browser extension for ChatGPT/Claude.ai/Gemini.
 - **Synonym-aware search** — Chunks get comprehensive synonym tags. A search for "authentication" finds chunks about "login" too.
 - **Full inventory prevents missed info** — Every load output lists ALL chunks, so the AI can spot what BM25 didn't match.
 - **Scales without slowing down** — Search time is proportional to matches, not corpus size. The inverted index never scans the full corpus.
@@ -94,15 +94,33 @@ claude mcp add --transport stdio easybase \
 
 Available tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`
 
+### Browser Extension — ChatGPT, Claude.ai, Gemini
+
+Adds a floating button to web AI chats. Loads context into the chat input. Auto-captures AI responses.
+
+**1. Start the local server:**
+
+```bash
+python3 http_server.py
+```
+
+**2. Load the extension in Chrome** (or Edge, Brave):
+
+1. Go to `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked** → select the `extension/` folder
+
+**3. Use it:** Visit any supported AI chat → click **EB** → enter query → context is injected.
+
 ---
 
 ## Where Easybase Won't Work
 
 | Platform | Why |
 |----------|-----|
-| **Web-based AI chats** (ChatGPT, Claude.ai, Gemini) | Requires manual copy-paste of context |
-| **Mobile apps** (ChatGPT iOS, Claude mobile) | No MCP support |
+| **Mobile apps** (ChatGPT iOS, Claude mobile) | No extensions, no CLI |
 | **Desktop apps without MCP** | No tool protocol support |
+| **Web AI behind corporate firewalls** | Localhost may be blocked |
 
 ---
 
@@ -112,7 +130,9 @@ Available tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_r
 easybase/
 ├── ctx.py              Core engine (Python stdlib only)
 ├── mcp_server.py       MCP server (requires: pip install mcp)
+├── http_server.py      HTTP server for browser extension (stdlib only)
 ├── PROTOCOL.md         AI instructions (auto-included in every load)
+├── extension/          Browser extension (Chrome Manifest V3)
 ├── soul.md             User profile (generated during init)
 ├── config.yaml         Settings (generated during init)
 ├── knowledge/          Knowledge tree with summaries
@@ -133,6 +153,8 @@ Standard BM25 (k1=1.5, b=0.75) with two modifications:
 
 - **Core (ctx.py):** Python 3.6+. Standard library only.
 - **MCP server:** Python 3.10+. Requires `pip install mcp`.
+- **HTTP server:** Python 3.6+. Standard library only.
+- **Browser extension:** Chrome, Edge, Brave, or any Chromium browser.
 
 ## License
 
