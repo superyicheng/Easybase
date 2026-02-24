@@ -1151,8 +1151,13 @@ def cmd_init(base_dir=None):
 
     if has_claude:
         print("Detected: Claude Code")
-        print("  Registering Easybase as MCP server...")
         import subprocess
+        # Remove existing registration if present (re-running init should just work)
+        subprocess.run(
+            ["claude", "mcp", "remove", "easybase", "-s", "user"],
+            capture_output=True,
+        )
+        print("  Registering Easybase as MCP server...")
         try:
             subprocess.run([
                 "claude", "mcp", "add", "--scope", "user",
@@ -1341,8 +1346,11 @@ def _load_context(query, base_dir=None, top_k=None, scope=None):
         if permission_content:
             out.write(permission_content + "\n\n")
 
-    # Always include protocol
-    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
+    # Always include protocol — prefer code dir (stays current with git pull),
+    # fall back to data dir copy
+    protocol_path = os.path.join(SCRIPT_DIR, PROTOCOL_FILE)
+    if not os.path.exists(protocol_path):
+        protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
     if os.path.exists(protocol_path):
         with open(protocol_path, 'r', encoding='utf-8') as f:
             out.write(f.read().rstrip() + "\n\n")
@@ -1932,9 +1940,11 @@ def _check_integrity(base_dir=None):
     if not os.path.exists(permission_path):
         issues.append("WARNING: permission.md not found.")
 
-    protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
+    protocol_path = os.path.join(SCRIPT_DIR, PROTOCOL_FILE)
     if not os.path.exists(protocol_path):
-        issues.append("WARNING: PROTOCOL.md not found")
+        protocol_path = os.path.join(base_dir, PROTOCOL_FILE)
+        if not os.path.exists(protocol_path):
+            issues.append("WARNING: PROTOCOL.md not found")
 
     if issues:
         return "\n".join(issues) + f"\n\n{len(issues)} issue(s) found."
@@ -2256,6 +2266,100 @@ def cmd_scan(args, base_dir=None):
     print(f"Imported {len(all_imported)} chunk(s) from {len(new_projects)} project(s).")
 
 
+def cmd_update():
+    """Update Easybase to the latest version."""
+    print(BANNER)
+    print("  Update Easybase")
+    print()
+
+    import subprocess
+
+    # Step 1: git pull in the code directory
+    git_dir = os.path.join(SCRIPT_DIR, ".git")
+    if not os.path.isdir(git_dir):
+        print("Error: Not a git repository. Re-clone from GitHub to enable updates:")
+        print("  git clone https://github.com/superyicheng/Easybase.git")
+        sys.exit(1)
+
+    print("1. Pulling latest code...")
+    try:
+        result = subprocess.run(
+            ["git", "pull"],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=True,
+        )
+        output = result.stdout.strip()
+        if "Already up to date" in output:
+            print("   Already up to date.")
+        else:
+            print(f"   {output}")
+    except subprocess.CalledProcessError as e:
+        print(f"   git pull failed: {e.stderr.strip()}")
+        print("   You may have local changes. Try: cd {SCRIPT_DIR} && git stash && git pull")
+        sys.exit(1)
+    except FileNotFoundError:
+        print("   git not found. Please install git or update manually.")
+        sys.exit(1)
+
+    # Step 2: Ensure pip dependencies are installed
+    print("2. Checking dependencies...")
+    try:
+        import importlib
+        importlib.import_module("mcp")
+        print("   mcp package: installed.")
+    except ImportError:
+        print("   Installing mcp package...")
+        pip_cmd = [sys.executable, "-m", "pip", "install"]
+        in_venv = (hasattr(sys, 'real_prefix') or
+                   (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix))
+        if not in_venv:
+            pip_cmd.append("--user")
+        pip_cmd.append("mcp")
+        try:
+            subprocess.run(pip_cmd, capture_output=True, check=True)
+            print("   mcp installed.")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("   Could not install mcp. Run manually: pip install --user mcp")
+
+    # Step 3: Re-register MCP server if Claude Code is available
+    print("3. Checking MCP registration...")
+    has_claude = shutil.which("claude") is not None
+    if has_claude:
+        base_dir = _resolve_base_dir()
+        abs_base = os.path.abspath(base_dir)
+        mcp_server_path = os.path.join(SCRIPT_DIR, "mcp_server.py")
+        # Remove and re-add to update paths
+        subprocess.run(
+            ["claude", "mcp", "remove", "easybase", "-s", "user"],
+            capture_output=True,
+        )
+        try:
+            subprocess.run([
+                "claude", "mcp", "add", "--scope", "user",
+                "--transport", "stdio", "easybase",
+                "-e", f"EASYBASE_DIR={abs_base}",
+                "--", sys.executable, mcp_server_path,
+            ], capture_output=True, check=True)
+            print("   MCP server re-registered.")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("   MCP re-registration failed. Run init to fix.")
+    else:
+        print("   Claude Code not detected, skipping MCP.")
+
+    # Step 4: Copy updated PROTOCOL.md to data dir
+    print("4. Updating protocol in data directory...")
+    base_dir = _resolve_base_dir()
+    src_protocol = os.path.join(SCRIPT_DIR, PROTOCOL_FILE)
+    dst_protocol = os.path.join(base_dir, PROTOCOL_FILE)
+    if os.path.exists(src_protocol) and os.path.isdir(base_dir):
+        shutil.copy2(src_protocol, dst_protocol)
+        print("   PROTOCOL.md updated.")
+    else:
+        print("   Skipped (data directory not initialized yet).")
+
+    print()
+    print("Update complete. Start a new AI session to use the latest version.")
+
+
 # --- Main ---
 
 def main():
@@ -2265,6 +2369,7 @@ def main():
         print()
         print("Commands:")
         print("  init                               Interactive setup")
+        print("  update                             Update Easybase to latest version")
         print('  index                              Build index from chunks/')
         print('  search "query" [--top N] [-v]      Search for chunks')
         print('         [--scope path]')
@@ -2289,6 +2394,8 @@ def main():
 
     if cmd == "init":
         cmd_init()
+    elif cmd == "update":
+        cmd_update()
     elif cmd == "index":
         cmd_index()
     elif cmd == "search":

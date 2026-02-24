@@ -46,6 +46,58 @@ After init, start a new session in your AI tool and Easybase loads automatically
 
 Available MCP tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`, `easybase_permit`
 
+---
+
+## How It Works
+
+After setup, you just talk to the AI normally. Easybase works behind the scenes — loading relevant context before the AI answers, and storing both your information and the AI's answers as searchable knowledge for future sessions.
+
+### The loop (happens automatically)
+
+1. **You ask something** → Easybase searches the knowledge base and gives the AI everything relevant
+2. **AI answers** → Using your context (soul.md) + matching knowledge chunks + its own reasoning
+3. **AI stores the answer** → The answer is saved as a new chunk so future sessions can find it
+4. **AI stores your info** → Any new information you provided is also saved as a chunk
+
+Everything accumulates. The more you use it, the more the AI knows about your projects, preferences, and past decisions.
+
+### Example: Building a web app across sessions
+
+**Session 1** — You ask: *"Help me set up authentication for my Express app"*
+- Easybase loads soul.md (knows you prefer TypeScript, use PostgreSQL)
+- AI answers with a complete auth setup using Passport.js + JWT
+- AI stores its answer as chunk `auth-setup-001` with tags: login, signin, jwt, passport, session, credentials
+- AI stores your preference as chunk `project-prefs-001`: "User chose JWT over sessions for auth"
+
+**Session 2** (days later) — You ask: *"Add password reset to my app"*
+- Easybase finds `auth-setup-001` — the AI sees the exact auth setup from Session 1
+- AI builds the password reset flow that matches your existing auth architecture
+- AI stores the answer as chunk `password-reset-001`
+
+**Session 3** — You ask: *"Why did we use JWT instead of sessions?"*
+- Easybase finds `project-prefs-001` and `auth-setup-001`
+- AI answers from stored context — no guessing, no "I don't have context from previous sessions"
+
+### Example: Research and decision-making
+
+**Session 1** — You ask: *"Compare Redis vs Memcached for our caching layer"*
+- AI researches and provides a detailed comparison
+- AI stores the comparison as chunk `cache-comparison-001`
+- AI stores your decision: "Chose Redis for persistence + pub/sub support"
+
+**Session 2** — A teammate asks: *"What caching solution are we using and why?"*
+- Easybase returns the stored comparison and decision
+- AI gives a complete answer with full rationale — no need to re-research
+
+### Example: Accumulating project knowledge
+
+Over weeks of use, the knowledge base naturally grows:
+- Bug fixes and their root causes → searchable for recurring issues
+- Architecture decisions and rationale → never lost in chat history
+- Code review findings → patterns the AI remembers and applies
+- Setup instructions → consistent onboarding across sessions
+- User preferences → the AI adapts to your style automatically
+
 ### Where your data lives
 
 All data is stored in `~/.easybase/` — separate from the code you cloned:
@@ -61,8 +113,17 @@ All data is stored in `~/.easybase/` — separate from the code you cloned:
 | `~/.easybase/config.yaml` | All settings |
 | `~/.easybase/index.json` | Search index (regenerated automatically) |
 
-The git clone contains only code — no personal data, no conflicts on `git pull`.
+The git clone contains only code — no personal data, no conflicts on update.
 To use a different data location, set `EASYBASE_DIR` to point to your data directory.
+
+### Update Easybase
+
+```bash
+cd Easybase
+python3 ctx.py update
+```
+
+Pulls the latest code, installs any new dependencies, re-registers the MCP server, and updates the protocol — all without touching your data. Run this whenever you want the latest version.
 
 ---
 

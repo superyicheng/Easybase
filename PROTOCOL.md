@@ -49,17 +49,42 @@ user context (soul.md) + abstract background (summaries) + specific details (chu
 ctx.py respond "paste your complete answer here"
 ```
 
-This automatically records the AI response paired with the original query.
+This records the raw AI response to the session log for auditing.
 
-### Step 5: Store new knowledge (if any)
+### Step 5: Store your answer as knowledge (MANDATORY)
 
-If you learned something new or the user provided new information:
+Your answers are the most valuable knowledge in the system. Every answer
+that contains useful information MUST be stored as a chunk so future
+sessions can find it. `respond` only logs to the inbox — it does NOT
+make your answer searchable. You MUST call `add` to store it.
+
 ```
 ctx.py add --id {id} --summary "{summary}" --body "{content}"
   --tags "{tags}" --depends "{dependencies}" --tree-path "{path}"
 ```
 
+**What to store:** Any answer that explains something, solves a problem,
+makes a decision, provides instructions, or produces useful output.
+The only answers you skip are trivial acknowledgments ("ok", "done").
+
+**How to store:** Extract the useful content from your answer into a
+well-titled chunk. The summary should describe what was answered, not
+what was asked. Write tags for every synonym.
+
+Examples:
+- User asks "how do I set up auth?" → store your auth setup instructions
+  as a chunk with id like `auth-setup-001`
+- User asks to fix a bug → store the root cause and fix as a chunk
+- User asks for a code review → store the findings and recommendations
+- User provides new information → store that too
+
 Then update the relevant `_summary.md` if understanding has changed.
+
+### Step 6: Store new knowledge from the user (if any)
+
+If the user provided new information, preferences, or decisions in their
+message, store those as separate chunks too. User-provided knowledge and
+AI-generated answers are both valuable — store both.
 
 ## What "all useful information" means
 
@@ -242,7 +267,8 @@ and won't be surprised.
 ## Your responsibility
 
 You are responsible for all knowledge management:
-- Creating chunks when new information appears
+- **Storing every useful answer you give** — this is the #1 source of knowledge
+- Creating chunks when new information appears from the user
 - Writing good summaries and synonym tags for BM25 findability
 - Updating tree summaries when understanding changes
 - Checking the full inventory to avoid missing relevant information
@@ -250,6 +276,8 @@ You are responsible for all knowledge management:
 - Recording permanent permissions when the user grants them
 
 The user should never have to create or manage chunks manually.
+If a future session can't find something you answered before, that's a
+failure — you should have stored it.
 
 ## Tool Names
 
