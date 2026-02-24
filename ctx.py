@@ -2283,18 +2283,45 @@ def cmd_update():
 
     print("1. Pulling latest code...")
     try:
+        # Detect the default branch name (main or master)
         result = subprocess.run(
-            ["git", "pull"],
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=SCRIPT_DIR, capture_output=True, text=True, check=True,
         )
-        output = result.stdout.strip()
-        if "Already up to date" in output:
+        branch = result.stdout.strip()
+
+        # Fetch latest from remote
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=True,
+        )
+
+        # Check if already up to date
+        local = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        remote = subprocess.run(
+            ["git", "rev-parse", f"origin/{branch}"],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        if local == remote:
             print("   Already up to date.")
         else:
-            print(f"   {output}")
+            # Reset to match remote — safe because user data is in ~/.easybase, not here
+            subprocess.run(
+                ["git", "reset", "--hard", f"origin/{branch}"],
+                cwd=SCRIPT_DIR, capture_output=True, text=True, check=True,
+            )
+            # Clean untracked files that might conflict (e.g. new files in the repo)
+            subprocess.run(
+                ["git", "clean", "-fd"],
+                cwd=SCRIPT_DIR, capture_output=True, text=True,
+            )
+            print("   Updated to latest version.")
     except subprocess.CalledProcessError as e:
-        print(f"   git pull failed: {e.stderr.strip()}")
-        print("   You may have local changes. Try: cd {SCRIPT_DIR} && git stash && git pull")
+        print(f"   Update failed: {e.stderr.strip() if e.stderr else e}")
         sys.exit(1)
     except FileNotFoundError:
         print("   git not found. Please install git or update manually.")
