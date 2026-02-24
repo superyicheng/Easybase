@@ -6,6 +6,7 @@ logs/
 index.json
 projects.json
 config.yaml
+.pending_store
 soul.md
 permission.md
 

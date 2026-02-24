@@ -50,6 +50,7 @@ SOUL_FILE = "soul.md"
 PERMISSION_FILE = "permission.md"
 CHANGES_LOG = "logs/changes.log"
 PROJECTS_FILE = "projects.json"
+PENDING_STORE_FILE = ".pending_store"
 
 SCAN_TARGETS = [
     "CLAUDE.md", ".cursorrules", ".cursorignore",
@@ -271,6 +272,40 @@ def load_config(base_dir=None):
     e.setdefault("citation_required", False)
 
     return config
+
+
+# --- Store Enforcement ---
+
+def _set_pending_store(query, base_dir):
+    """Mark that a load was called and an answer storage is expected."""
+    path = os.path.join(base_dir, PENDING_STORE_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(query[:200])
+
+def _clear_pending_store(base_dir):
+    """Mark that the AI stored its answer (called after easybase_add)."""
+    path = os.path.join(base_dir, PENDING_STORE_FILE)
+    if os.path.exists(path):
+        os.remove(path)
+
+def _check_pending_store(base_dir):
+    """Check if the AI skipped storing its answer from the previous load.
+    Returns the previous query if skipped, None otherwise."""
+    path = os.path.join(base_dir, PENDING_STORE_FILE)
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    return None
+
+def _store_reminder():
+    """Return the mandatory store reminder appended to every load output."""
+    return (
+        "\n\n# !! MANDATORY: Store your answer !!\n"
+        "After you answer, you MUST call easybase_add to store your answer as a chunk.\n"
+        "easybase_respond only logs to inbox — it does NOT make your answer searchable.\n"
+        "If you skip this, the next easybase_load will flag a VIOLATION.\n"
+        "Only skip for trivial responses (\"ok\", \"done\", single-word acknowledgments).\n"
+    )
 
 
 # --- Logging ---
@@ -1330,6 +1365,18 @@ def _load_context(query, base_dir=None, top_k=None, scope=None):
 
     out.write("[CONTEXT]\n")
 
+    # Check if the AI skipped storing its answer from the previous load
+    skipped_query = _check_pending_store(base_dir)
+    if skipped_query:
+        out.write("# !! VIOLATION: You did NOT store your last answer !!\n")
+        out.write(f"Your previous query was: \"{skipped_query}\"\n")
+        out.write("You answered but NEVER called easybase_add to store it.\n")
+        out.write("That answer is now LOST — future sessions cannot find it.\n")
+        out.write("DO NOT repeat this. After answering THIS query, you MUST call easybase_add.\n\n")
+
+    # Set pending — cleared when easybase_add is called
+    _set_pending_store(query, base_dir)
+
     # Always include soul.md first
     soul_path = os.path.join(base_dir, SOUL_FILE)
     if os.path.exists(soul_path):
@@ -1402,6 +1449,7 @@ def _load_context(query, base_dir=None, top_k=None, scope=None):
         stale = _format_stale_projects(base_dir)
         if stale:
             out.write(stale)
+        out.write(_store_reminder())
         out.write("\n[/CONTEXT]")
         return out.getvalue()
 
@@ -1442,6 +1490,7 @@ def _load_context(query, base_dir=None, top_k=None, scope=None):
     stale = _format_stale_projects(base_dir)
     if stale:
         out.write(stale)
+    out.write(_store_reminder())
     out.write("\n[/CONTEXT]")
     return out.getvalue()
 
@@ -1511,6 +1560,9 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
 
     tree_info = f" tree:{tree_path}" if tree_path else ""
     log_change(f'ADD {chunk_id} "{summary}"{tree_info}', base_dir)
+
+    # Clear the pending store flag — the AI fulfilled its obligation
+    _clear_pending_store(base_dir)
 
     # Capture index output
     old_stdout = sys.stdout
