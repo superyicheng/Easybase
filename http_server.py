@@ -164,6 +164,14 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                 result = ctx._store_exchange(query, response_text, BASE_DIR)
                 self._json_response({"ok": True, "message": result})
 
+            elif parsed.path == "/api/external":
+                action = body.get("action", "")
+                if not action:
+                    return self._json_response(
+                        {"error": "action is required"}, 400)
+                result = ctx._declare_external(action, BASE_DIR)
+                self._json_response({"ok": True, "message": result})
+
             elif parsed.path == "/api/permit":
                 project = body.get("project", "")
                 perm_type = body.get("type", "")

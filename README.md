@@ -15,7 +15,7 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 - **All useful information, nothing else** — Relevant chunks are loaded in full. Everything outside the query's scope is abstracted in tree summaries — present as structure, not as noise.
 - **User-first context** — soul.md gives the AI your background and preferences before any project knowledge.
 - **Zero dependencies** — Core engine is a single Python file using only the standard library. MCP server requires one package (`mcp`).
-- **Works with any AI** — MCP server for Claude/Cursor, browser extension for ChatGPT/Claude.ai/Gemini.
+- **Works with any MCP-compatible AI** — Claude Code, Claude Desktop, Cursor, Windsurf, and any tool that supports the Model Context Protocol.
 - **Import your existing projects** — Point Easybase at your project directories during setup and it imports all of them as searchable knowledge, instantly.
 - **Synonym-aware search** — Chunks get comprehensive synonym tags. A search for "authentication" finds chunks about "login" too.
 - **Full inventory prevents missed info** — Every load output lists ALL chunks, so the AI can spot what BM25 didn't match.
@@ -40,11 +40,21 @@ That's it. Init handles everything:
 1. **User Profile** — set up soul.md (your preferences, background, context for the AI)
 2. **Storage** — what the AI should store, enforcement mode
 3. **Project Discovery** — **import all your existing projects at once.** You choose which directories Easybase is allowed to scan (e.g. `~/Projects`, `~/work`). Easybase scans those directories for projects containing AI context files (CLAUDE.md, .cursorrules, README.md, etc.) and imports every project it finds as searchable knowledge chunks. You can select which projects to import, or import all of them. You can always import more later with `python3 ctx.py scan`.
-4. **AI Tool Integration** — automatically installs the `mcp` package and registers Easybase as an MCP server (auto-detects Claude Code). The MCP server itself instructs the AI to load Easybase — no config files to edit. For apps that can't be auto-configured (Claude Desktop, Cursor, Windsurf), it prints the exact config to copy. For web AI (ChatGPT, Claude.ai, Gemini), use the browser extension.
+4. **MCP Server Registration** — automatically installs the `mcp` package and registers Easybase as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server. MCP is the standard protocol that lets AI tools call external tools — Easybase registers itself so the AI can load context, store knowledge, and search chunks through MCP tool calls. Auto-detects Claude Code; for Claude Desktop, Cursor, or Windsurf, it prints the exact config to copy.
 
 After init, start a new session in your AI tool and Easybase loads automatically.
 
-Available MCP tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`, `easybase_permit`
+### Supported AI platforms
+
+| Platform | Connection | Setup |
+|----------|-----------|-------|
+| **Claude Code** | MCP (auto-registered) | `python3 ctx.py init` handles it |
+| **Claude Desktop** | MCP (manual config) | Init prints the JSON to paste into settings |
+| **Cursor** | MCP (manual config) | Init prints the JSON to paste into settings |
+| **Windsurf** | MCP (manual config) | Init prints the JSON to paste into settings |
+| **Any MCP-compatible tool** | MCP | Use the config from init |
+
+Available MCP tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_external`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`, `easybase_permit`
 
 ---
 
@@ -89,6 +99,24 @@ Everything accumulates. The more you use it, the more the AI knows about your pr
 - Easybase returns the stored comparison and decision
 - AI gives a complete answer with full rationale — no need to re-research
 
+### Example: External information capture (enforced)
+
+When the AI reads files, searches the web, or uses external tools, Easybase forces it to store the useful findings — not just its own answer. This is technically enforced: the AI must explicitly declare whether it used external sources after every answer. Skipping triggers a violation.
+
+**Session 1** — You ask: *"Help me understand how auth works in our codebase"*
+- AI reads `auth.py`, `middleware.py`, `routes.py`, `models/user.py`
+- AI answers with a summary of the auth architecture
+- AI stores its answer as chunk `auth-overview-001`
+- **AI stores external findings**: key facts from each file it read — token validation logic, middleware chain, route guards, user model schema — as separate chunks with file paths as source attribution
+- AI calls `easybase_external("done")`
+
+**Session 2** (weeks later) — You ask: *"How does token refresh work?"*
+- Easybase finds the stored file findings from Session 1
+- AI answers immediately from stored knowledge — no need to re-read the source files
+- Even if the AI in Session 1 wrote a vague summary, the raw file findings are there
+
+Without this enforcement, only the AI's summary would survive. The actual file contents — the specific logic, the edge cases, the implementation details — would be lost.
+
 ### Example: Accumulating project knowledge
 
 Over weeks of use, the knowledge base naturally grows:
@@ -97,6 +125,7 @@ Over weeks of use, the knowledge base naturally grows:
 - Code review findings → patterns the AI remembers and applies
 - Setup instructions → consistent onboarding across sessions
 - User preferences → the AI adapts to your style automatically
+- External source findings → files read, web searches, API outputs all preserved
 
 ### Where your data lives
 

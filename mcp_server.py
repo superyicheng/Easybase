@@ -36,7 +36,9 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("easybase", instructions=(
     "You MUST call easybase_load at the start of every conversation "
     "to load context from the Easybase knowledge base. Do this before "
-    "responding to the user's first message."
+    "responding to the user's first message. After answering, store your "
+    "response and any useful external information (files read, web searches, "
+    "tool outputs) as chunks via easybase_add."
 ))
 
 BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.expanduser("~/.easybase"))
@@ -88,12 +90,14 @@ def easybase_search(query: str, scope: str = "") -> str:
 def easybase_add(id: str, summary: str, body: str = "",
                  domain: str = "", tags: str = "",
                  depends: str = "", tree_path: str = "") -> str:
-    """Store new knowledge as a chunk. Include synonym tags for BM25 findability.
+    """Store new knowledge as a chunk. The full response from easybase_respond
+    is auto-attached as the body — you do NOT need to paste your answer.
+    Focus on writing a good summary and comprehensive synonym tags.
 
     Args:
         id: Unique chunk ID (e.g. "auth-001")
         summary: Searchable title — indexed at 2x weight, use specific terms
-        body: Full content of the chunk
+        body: Optional annotation (placed above the auto-attached full response)
         domain: Category (e.g. "backend", "frontend", "devops")
         tags: Comma-separated synonyms and aliases for search (CRITICAL for findability)
         depends: Comma-separated chunk IDs this knowledge builds on
@@ -117,6 +121,23 @@ def easybase_respond(response_text: str) -> str:
     """
     try:
         return ctx._record_response(response_text, BASE_DIR)
+    except ctx.EasybaseError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def easybase_external(action: str) -> str:
+    """MANDATORY: Declare external source handling after storing your answer.
+
+    You MUST call this after every easybase_add. This forces you to think about
+    whether you used external sources (files, web searches, APIs, databases)
+    and whether you stored the useful findings.
+
+    Args:
+        action: "done" (stored external info as chunks) or "none" (no external sources used)
+    """
+    try:
+        return ctx._declare_external(action, BASE_DIR)
     except ctx.EasybaseError as e:
         return f"Error: {e}"
 

@@ -58,25 +58,40 @@ that contains useful information MUST be stored as a chunk so future
 sessions can find it. `respond` only logs to the inbox — it does NOT
 make your answer searchable. You MUST call `add` to store it.
 
+**Your full response is auto-attached.** When you called `respond` in
+Step 4, the system saved your complete response. The next `add` call
+automatically uses it as the chunk body — you do NOT need to paste your
+answer into the body field. The body is handled for you.
+
+Your job is to provide good **metadata** for searchability:
+
 ```
-ctx.py add --id {id} --summary "{summary}" --body "{content}"
-  --tags "{tags}" --depends "{dependencies}" --tree-path "{path}"
+ctx.py add --id {id} --summary "{specific searchable title}"
+  --tags "{comprehensive synonyms}" --tree-path "{path}"
 ```
+
+**What you control:**
+- `id` — descriptive, unique identifier (e.g. `auth-setup-001`)
+- `summary` — specific, searchable title (indexed at 2x weight)
+- `tags` — comprehensive synonyms so BM25 can find this chunk
+- `tree_path` — location in the knowledge tree
+- `depends` — links to related chunks
+- `body` — optional annotation placed above the auto-attached response
+
+**What the system controls:**
+- The full response body — auto-attached from your `respond` call
+- If you provide a body, it becomes a preamble above the full response
+- If you skip `add` entirely, the system auto-saves your response as a
+  safety net (but with poor metadata — so always call `add`)
 
 **What to store:** Any answer that explains something, solves a problem,
 makes a decision, provides instructions, or produces useful output.
 The only answers you skip are trivial acknowledgments ("ok", "done").
 
-**How to store:** Extract the useful content from your answer into a
-well-titled chunk. The summary should describe what was answered, not
-what was asked. Write tags for every synonym.
-
 Examples:
-- User asks "how do I set up auth?" → store your auth setup instructions
-  as a chunk with id like `auth-setup-001`
-- User asks to fix a bug → store the root cause and fix as a chunk
-- User asks for a code review → store the findings and recommendations
-- User provides new information → store that too
+- User asks "how do I set up auth?" → `add --id auth-setup-001 --summary "OAuth2 setup with Passport.js and JWT for Express" --tags "login, signin, authentication, credentials, session, passport, jwt"`
+- User asks to fix a bug → `add --id bugfix-navbar-001 --summary "Fixed navbar dropdown not closing on outside click" --tags "menu, click, close, dismiss, dropdown, ui, bug"`
+- User asks for a code review → `add --id review-api-001 --summary "API endpoint code review — missing validation and error handling" --tags "review, validation, error, endpoint, api"`
 
 Then update the relevant `_summary.md` if understanding has changed.
 
@@ -85,6 +100,51 @@ Then update the relevant `_summary.md` if understanding has changed.
 If the user provided new information, preferences, or decisions in their
 message, store those as separate chunks too. User-provided knowledge and
 AI-generated answers are both valuable — store both.
+
+### Step 7: Store external information and declare (MANDATORY — ENFORCED)
+
+This step is **technically enforced**. After every `easybase_add` (Step 5),
+the system sets a flag. You MUST clear it by calling `easybase_external`.
+If you skip this, the next `easybase_load` will flag a VIOLATION.
+
+**Step 7a: Store useful external information**
+
+If you read files, searched the web, queried databases, or used any
+external tool while answering, you MUST store the useful information
+you found. This is how the knowledge base grows beyond just Q&A — it
+captures the sources and findings that informed your answer.
+
+What to store:
+- **File contents** — Key facts from files you read. Include the file path.
+- **Web search results** — Findings with source URLs.
+- **External tool outputs** — Database results, API responses, system info.
+
+How to store:
+- One chunk per source or topic — don't dump everything into one chunk
+- Include source attribution: file path, URL, tool name
+- Extract the useful parts — don't store raw dumps
+- Use tree_path: `external/files`, `external/web`, `external/tools`
+- Write good summary and tags so BM25 can find it later
+
+**Step 7b: Declare external sources (MANDATORY)**
+
+After storing external info (or if you didn't use any), you MUST call:
+
+```
+easybase_external("done")    # I stored external info as chunks
+easybase_external("none")    # I did not use any external sources
+```
+
+This forces you to actively think: "Did I use external sources? Did I
+store them?" You cannot skip this — the system enforces it.
+
+**When to use "none":** You answered purely from Easybase context and
+your own knowledge, without reading files, searching the web, or calling
+any external tools.
+
+**When to use "done":** You read files, searched the web, queried a
+database, or used any external tool — and you stored the useful findings
+as chunks via `easybase_add` before calling this.
 
 ## What "all useful information" means
 
@@ -289,6 +349,7 @@ When using Easybase via MCP server, the commands use these tool names:
 | `ctx.py search` | `easybase_search` |
 | `ctx.py add` | `easybase_add` |
 | `ctx.py respond` | `easybase_respond` |
+| `ctx.py external` | `easybase_external` |
 | `ctx.py index` | `easybase_index` |
 | `ctx.py stats` | `easybase_stats` |
 | `ctx.py ingest` | `easybase_ingest` |

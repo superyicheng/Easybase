@@ -51,6 +51,8 @@ PERMISSION_FILE = "permission.md"
 CHANGES_LOG = "logs/changes.log"
 PROJECTS_FILE = "projects.json"
 PENDING_STORE_FILE = ".pending_store"
+PENDING_EXTERNAL_FILE = ".pending_external"
+LAST_RESPONSE_FILE = ".last_response"
 
 SCAN_TARGETS = [
     "CLAUDE.md", ".cursorrules", ".cursorignore",
@@ -297,14 +299,76 @@ def _check_pending_store(base_dir):
             return f.read().strip()
     return None
 
+def _save_last_response(content, base_dir):
+    """Save full AI response for auto-attachment to the next chunk."""
+    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+def _read_last_response(base_dir):
+    """Read the saved full response. Returns content or None."""
+    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    return None
+
+def _consume_last_response(base_dir):
+    """Read and delete the saved full response. Returns content or None."""
+    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    if os.path.exists(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        os.remove(path)
+        return content
+    return None
+
+def _clear_last_response(base_dir):
+    """Delete the saved full response."""
+    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    if os.path.exists(path):
+        os.remove(path)
+
+def _set_pending_external(base_dir):
+    """Mark that the AI must declare external source handling."""
+    path = os.path.join(base_dir, PENDING_EXTERNAL_FILE)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write("pending")
+
+def _check_pending_external(base_dir):
+    """Check if the AI skipped the external source declaration."""
+    path = os.path.join(base_dir, PENDING_EXTERNAL_FILE)
+    return os.path.exists(path)
+
+def _clear_pending_external(base_dir):
+    """Clear the external source declaration flag."""
+    path = os.path.join(base_dir, PENDING_EXTERNAL_FILE)
+    if os.path.exists(path):
+        os.remove(path)
+
+def _declare_external(action, base_dir=None):
+    """Declare external source handling. Called after easybase_add."""
+    base_dir = _resolve_base_dir(base_dir)
+    action = action.strip().lower()
+    if action not in ("done", "none"):
+        raise EasybaseError('action must be "done" or "none"')
+    if not _check_pending_external(base_dir):
+        return "No pending external declaration needed."
+    _clear_pending_external(base_dir)
+    if action == "none":
+        return "Declared: no external sources used."
+    return "Declared: external information stored."
+
 def _store_reminder():
     """Return the mandatory store reminder appended to every load output."""
     return (
-        "\n\n# !! MANDATORY: Store your answer !!\n"
-        "After you answer, you MUST call easybase_add to store your answer as a chunk.\n"
-        "easybase_respond only logs to inbox — it does NOT make your answer searchable.\n"
-        "If you skip this, the next easybase_load will flag a VIOLATION.\n"
-        "Only skip for trivial responses (\"ok\", \"done\", single-word acknowledgments).\n"
+        "\n\n# !! MANDATORY: Store your answer, then declare external sources !!\n"
+        "1. Call easybase_add to store your answer (full response auto-attached).\n"
+        "2. If you used external sources (read files, web search, tools), store\n"
+        "   useful findings as separate chunks via easybase_add.\n"
+        "3. Then call easybase_external(\"done\") or easybase_external(\"none\").\n"
+        "ALL THREE STEPS ARE ENFORCED. Skipping any will flag a VIOLATION.\n"
+        "Only skip everything for trivial responses (\"ok\", \"done\", acknowledgments).\n"
     )
 
 
@@ -1404,11 +1468,47 @@ def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
     # Check if the AI skipped storing its answer from the previous load
     skipped_query = _check_pending_store(base_dir)
     if skipped_query:
-        out.write("# !! VIOLATION: You did NOT store your last answer !!\n")
-        out.write(f"Your previous query was: \"{skipped_query}\"\n")
-        out.write("You answered but NEVER called easybase_add to store it.\n")
-        out.write("That answer is now LOST — future sessions cannot find it.\n")
-        out.write("DO NOT repeat this. After answering THIS query, you MUST call easybase_add.\n\n")
+        # Safety net: if the orphaned response still exists, auto-save it
+        orphaned = _read_last_response(base_dir)
+        _clear_last_response(base_dir)
+        if orphaned and len(orphaned.strip()) >= 50:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            auto_tags = _basic_auto_tags(skipped_query + " " + orphaned[:2000])
+            auto_tags.append("auto-saved")
+            try:
+                _add_chunk(
+                    chunk_id=f"auto-{ts}",
+                    summary=skipped_query[:200],
+                    body=orphaned,
+                    domain="auto-saved",
+                    tags=", ".join(auto_tags),
+                    tree_path="sessions/auto",
+                    base_dir=base_dir,
+                )
+            except EasybaseError:
+                pass
+            out.write("# !! VIOLATION: You did NOT store your last answer !!\n")
+            out.write(f"Your previous query was: \"{skipped_query}\"\n")
+            out.write("You skipped easybase_add so the system auto-saved your response.\n")
+            out.write("Auto-saved chunks have poor metadata (no summary, no tags).\n")
+            out.write("DO NOT repeat this. Call easybase_add with good summary and tags.\n\n")
+        else:
+            out.write("# !! VIOLATION: You did NOT store your last answer !!\n")
+            out.write(f"Your previous query was: \"{skipped_query}\"\n")
+            out.write("You answered but NEVER called easybase_add to store it.\n")
+            out.write("That answer is now LOST — future sessions cannot find it.\n")
+            out.write("DO NOT repeat this. After answering THIS query, you MUST call easybase_add.\n\n")
+    else:
+        # No violation — clean up any stale last_response
+        _clear_last_response(base_dir)
+
+    # Check if the AI skipped the external source declaration
+    if _check_pending_external(base_dir):
+        out.write("# !! VIOLATION: You did NOT declare external sources !!\n")
+        out.write("After storing your answer, you MUST call easybase_external(\"done\")\n")
+        out.write("or easybase_external(\"none\"). You skipped this step.\n")
+        out.write("DO NOT repeat this. After easybase_add, ALWAYS call easybase_external.\n\n")
+        _clear_pending_external(base_dir)
 
     # Set pending — cleared when easybase_add is called
     _set_pending_store(query, base_dir)
@@ -1453,7 +1553,9 @@ def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
         out.write("# Memory Policy\n")
         out.write("Use Easybase as your primary knowledge source. You may also draw on\n")
         out.write("your own knowledge when Easybase doesn't have what you need.\n")
-        out.write("Always call ctx.py load first \u2014 it gives you the most relevant context.\n\n")
+        out.write("Always call ctx.py load first \u2014 it gives you the most relevant context.\n")
+        out.write("When you read files, search the web, or use external tools, store the\n")
+        out.write("useful information as chunks (Step 7) so future sessions have it too.\n\n")
 
     # Search instruction
     out.write("# Search Instruction\n")
@@ -1540,10 +1642,28 @@ def _search_results(query, base_dir=None, top_k=None, scope=None):
 
 def _add_chunk(chunk_id, summary, body="", domain="", tags="",
                depends="", tree_path="", base_dir=None):
-    """Create a chunk file, symlink, rebuild index. Returns status message."""
+    """Create a chunk file, symlink, rebuild index. Returns status message.
+
+    If a full AI response was saved by easybase_respond, it is automatically
+    used as the chunk body. The AI's body parameter becomes an optional
+    annotation placed above the full response.
+    """
     base_dir = _resolve_base_dir(base_dir)
     if not chunk_id or not summary:
         raise EasybaseError("--id and --summary are required.")
+
+    # Auto-attach full response from easybase_respond (prevents lazy storage)
+    last_response = _consume_last_response(base_dir)
+    if last_response and len(last_response.strip()) >= 50:
+        if body and len(body.strip()) > 0:
+            # AI provided annotation — check if it's already the full response
+            if len(body) < len(last_response) * 0.8:
+                # AI wrote a condensed version — keep it as annotation, append full response
+                body = body.rstrip() + "\n\n---\n## Full Response\n\n" + last_response
+            # else: AI included the full text already, use as-is
+        else:
+            # No body provided — use the full response
+            body = last_response
 
     tags_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
     depends_list = [d.strip() for d in depends.split(",") if d.strip()] if depends else []
@@ -1571,13 +1691,10 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
     os.makedirs(chunks_dir, exist_ok=True)
     filepath = os.path.join(chunks_dir, f"{chunk_id}.md")
 
-    msgs = []
-    if os.path.exists(filepath):
-        msgs.append(f"Warning: {filepath} already exists. Overwriting.")
+    overwritten = os.path.exists(filepath)
 
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines))
-    msgs.append(f"Created {filepath}")
 
     if tree_path:
         knowledge_dir = os.path.join(base_dir, KNOWLEDGE_DIR)
@@ -1592,28 +1709,32 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
         if os.path.exists(link_path) or os.path.islink(link_path):
             os.remove(link_path)
         os.symlink(rel_target, link_path)
-        msgs.append(f"Linked {link_path} \u2192 {rel_target}")
 
     tree_info = f" tree:{tree_path}" if tree_path else ""
     log_change(f'ADD {chunk_id} "{summary}"{tree_info}', base_dir)
 
     # Clear the pending store flag — the AI fulfilled its obligation
+    # If this was the answer store (pending_store existed), set pending_external
+    was_answer_store = _check_pending_store(base_dir) is not None
     _clear_pending_store(base_dir)
+    if was_answer_store:
+        _set_pending_external(base_dir)
 
-    # Capture index output
+    # Rebuild index silently
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
     try:
         build_index(base_dir)
-    except EasybaseError as e:
-        sys.stdout = old_stdout
-        msgs.append(f"Index warning: {e}")
-        return "\n".join(msgs)
-    index_output = sys.stdout.getvalue()
+    except EasybaseError:
+        pass
     sys.stdout = old_stdout
-    msgs.append(index_output.strip())
 
-    return "\n".join(msgs)
+    # Return compact summary for the user
+    index = load_index(base_dir)
+    total = index.get("N", 0)
+    tag_preview = ", ".join(tags_list[:5]) if tags_list else "none"
+    status = "updated" if overwritten else "stored"
+    return f"Chunk {status}: {chunk_id} — {summary} [tags: {tag_preview}] ({total} chunks total)"
 
 
 def _store_exchange(query, response_text, base_dir=None):
@@ -1695,11 +1816,14 @@ def _record_response(content, base_dir=None):
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write("\n".join(file_lines))
 
+    # Save full response for auto-attachment to the next easybase_add chunk
+    _save_last_response(content, base_dir)
+
     log_change(f"CAPTURE response:{filename}", base_dir)
 
     if cited_ids:
-        return f"Response recorded. Cited: {', '.join(cited_ids)}"
-    return "Response recorded."
+        return f"Response recorded. Full response will be auto-attached to your next easybase_add chunk. Cited: {', '.join(cited_ids)}"
+    return "Response recorded. Full response will be auto-attached to your next easybase_add chunk."
 
 
 def _rebuild_index(base_dir=None):

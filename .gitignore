@@ -7,6 +7,8 @@ index.json
 projects.json
 config.yaml
 .pending_store
+.pending_external
+.last_response
 soul.md
 permission.md
 
