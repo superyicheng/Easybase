@@ -13,6 +13,7 @@ Endpoints:
     GET  /api/search?query=...&top_k=10&scope=...  Search results (JSON)
     POST /api/add         {id, summary, body, ...}  Create chunk (JSON)
     POST /api/respond     {text}                    Record response (JSON)
+    POST /api/exchange    {query, response}         Auto-store Q&A as chunk (JSON)
     POST /api/index                                 Rebuild search index (JSON)
     POST /api/scan        {paths}                   Scan and import projects (JSON)
     POST /api/permit      {project, type, value}    Record permanent permission (JSON)
@@ -73,7 +74,8 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                 if not query:
                     return self._json_response({"error": "query parameter required"}, 400)
                 scope = params.get("scope", [None])[0]
-                result = ctx._load_context(query, BASE_DIR, scope=scope)
+                mode = params.get("mode", [None])[0]
+                result = ctx._load_context(query, BASE_DIR, scope=scope, mode=mode)
                 self._text_response(result)
 
             elif path == "/api/search":
@@ -151,6 +153,15 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                 paths_str = body.get("paths", "")
                 path_list = [p.strip() for p in paths_str.split(",") if p.strip()] if paths_str else None
                 result = ctx._scan_projects(path_list, BASE_DIR)
+                self._json_response({"ok": True, "message": result})
+
+            elif parsed.path == "/api/exchange":
+                query = body.get("query", "")
+                response_text = body.get("response", "")
+                if not response_text:
+                    return self._json_response(
+                        {"error": "response is required"}, 400)
+                result = ctx._store_exchange(query, response_text, BASE_DIR)
                 self._json_response({"ok": True, "message": result})
 
             elif parsed.path == "/api/permit":

@@ -1350,8 +1350,13 @@ def _check_project_freshness(base_dir=None):
 
 # --- Internal API (used by MCP and HTTP servers) ---
 
-def _load_context(query, base_dir=None, top_k=None, scope=None):
-    """Build and return the full context block as a string."""
+def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
+    """Build and return the full context block as a string.
+
+    mode='web': Compact output for browser extension injection.
+                Returns soul.md + matched chunks only.
+                Skips protocol, enforcement, search hints, inventory, store tracking.
+    """
     base_dir = _resolve_base_dir(base_dir)
     config = load_config(base_dir)
 
@@ -1360,6 +1365,37 @@ def _load_context(query, base_dir=None, top_k=None, scope=None):
 
     index = load_index(base_dir)
     results = search(query, index, top_k=top_k, scope=scope)
+
+    # --- Web mode: compact context for browser extension ---
+    if mode == "web":
+        out = io.StringIO()
+
+        # Soul identity
+        soul_path = os.path.join(base_dir, SOUL_FILE)
+        if os.path.exists(soul_path):
+            with open(soul_path, 'r', encoding='utf-8') as f:
+                soul_content = f.read().rstrip()
+            if soul_content:
+                out.write(soul_content + "\n\n")
+
+        # Retrieved chunks — body only
+        if results:
+            chunks_dir = os.path.join(base_dir, CHUNKS_DIR)
+            for r in results:
+                filepath = os.path.join(chunks_dir, r["path"])
+                if os.path.exists(filepath):
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    # Strip frontmatter
+                    if content.startswith("---"):
+                        parts = content.split("---", 2)
+                        if len(parts) >= 3:
+                            content = parts[2].strip()
+                    out.write(f"## {r['summary']}\n{content}\n\n")
+
+        return out.getvalue().rstrip()
+
+    # --- Normal mode (MCP / CLI) ---
 
     out = io.StringIO()
 
@@ -1578,6 +1614,48 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
     msgs.append(index_output.strip())
 
     return "\n".join(msgs)
+
+
+def _store_exchange(query, response_text, base_dir=None):
+    """Auto-store a Q&A exchange as a searchable chunk.
+
+    Used by the browser extension to store web AI responses automatically.
+    Creates a chunk from the query + response so future sessions can find it.
+    """
+    base_dir = _resolve_base_dir(base_dir)
+
+    if not response_text or len(response_text.strip()) < 50:
+        return "Response too short to store as knowledge."
+
+    # Log both sides to inbox
+    if query:
+        _auto_capture(query, "query", base_dir)
+    try:
+        _record_response(response_text, base_dir)
+    except EasybaseError:
+        pass  # Enforcement errors don't apply to web captures
+
+    # Generate searchable chunk
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    chunk_id = f"web-{ts}"
+
+    summary = query[:200].strip() if query else response_text.split("\n")[0][:200].strip()
+
+    combined = (query or "") + " " + response_text[:2000]
+    tags = _basic_auto_tags(combined)
+    tags.extend(["web-session", "auto-captured"])
+    tags_str = ", ".join(tags)
+
+    return _add_chunk(
+        chunk_id=chunk_id,
+        summary=summary,
+        body=response_text,
+        domain="web-session",
+        tags=tags_str,
+        depends="",
+        tree_path="sessions/web",
+        base_dir=base_dir,
+    )
 
 
 def _record_response(content, base_dir=None):

@@ -10,7 +10,7 @@ async function getServerUrl() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "load") {
-    handleLoad(message.query).then(sendResponse);
+    handleLoad(message.query, message.mode).then(sendResponse);
     return true;
   }
   if (message.action === "search") {
@@ -21,16 +21,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleRespond(message.text).then(sendResponse);
     return true;
   }
+  if (message.action === "exchange") {
+    handleExchange(message.query, message.response).then(sendResponse);
+    return true;
+  }
   if (message.action === "status") {
     handleStatus().then(sendResponse);
     return true;
   }
 });
 
-async function handleLoad(query) {
+async function handleLoad(query, mode) {
   try {
     const url = await getServerUrl();
     const params = new URLSearchParams({ query });
+    if (mode) params.set("mode", mode);
     const resp = await fetch(`${url}/api/load?${params}`);
     if (!resp.ok) {
       const text = await resp.text();
@@ -62,6 +67,20 @@ async function handleRespond(text) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
+    });
+    return await resp.json();
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function handleExchange(query, response) {
+  try {
+    const url = await getServerUrl();
+    const resp = await fetch(`${url}/api/exchange`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, response }),
     });
     return await resp.json();
   } catch (e) {

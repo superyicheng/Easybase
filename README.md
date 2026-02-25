@@ -127,26 +127,6 @@ Pulls the latest code, installs any new dependencies, re-registers the MCP serve
 
 ---
 
-## Browser Extension — ChatGPT, Claude.ai, Gemini
-
-Adds a floating button to web AI chats. Loads context into the chat input and auto-captures AI responses. All Easybase functions are available through the HTTP server — the extension communicates with it to load context, search, and record responses.
-
-**1. Start the local server:**
-
-```bash
-python3 http_server.py
-```
-
-**2. Load the extension in Chrome** (or Edge, Brave):
-
-1. Go to `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked** → select the `extension/` folder
-
-**3. Use it:** Visit any supported AI chat → click **EB** → enter query → context is injected.
-
----
-
 ## Where Easybase Won't Work
 
 | Platform | Why |

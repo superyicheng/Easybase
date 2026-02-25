@@ -1,12 +1,13 @@
 // Easybase Browser Extension — Content Script
 // Injected into AI chat pages (ChatGPT, Claude.ai, Gemini).
-// Adds a floating button that loads and injects Easybase context.
-// Auto-captures AI responses and sends them to the local server.
+// Fully automatic: injects Easybase context into every message
+// and stores all AI responses as searchable knowledge.
 
 (function () {
   "use strict";
 
-  // Detect which AI platform we're on
+  // --- Platform Detection ---
+
   function detectPlatform() {
     const host = window.location.hostname;
     if (host.includes("chatgpt.com") || host.includes("chat.openai.com"))
@@ -17,9 +18,12 @@
     return null;
   }
 
-  // Find the chat input element for each platform
-  // These selectors may need updates as platforms change their UI
-  function getInputElement(platform) {
+  const platform = detectPlatform();
+  if (!platform) return;
+
+  // --- Input Element Helpers ---
+
+  function getInputElement() {
     const selectors = {
       chatgpt: [
         'div#prompt-textarea[contenteditable="true"]',
@@ -36,37 +40,13 @@
       ],
     };
 
-    const platformSelectors = selectors[platform] || [];
-    for (const sel of platformSelectors) {
+    for (const sel of selectors[platform] || []) {
       const el = document.querySelector(sel);
       if (el) return el;
     }
     return null;
   }
 
-  // Set text in the input element
-  function setInputText(element, text) {
-    element.focus();
-
-    if (element.tagName === "TEXTAREA") {
-      // Standard textarea
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype, "value"
-      ).set;
-      nativeSetter.call(element, text);
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-    } else {
-      // Contenteditable div
-      // Create a paragraph with the text
-      element.innerHTML = "";
-      const p = document.createElement("p");
-      p.textContent = text;
-      element.appendChild(p);
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-  }
-
-  // Get current text from input element
   function getInputText(element) {
     if (element.tagName === "TEXTAREA") {
       return element.value;
@@ -74,36 +54,75 @@
     return element.textContent || "";
   }
 
-  const platform = detectPlatform();
-  if (!platform) return;
+  function setInputText(element, text) {
+    element.focus();
 
-  // --- Auto-capture: detect AI responses ---
+    if (element.tagName === "TEXTAREA") {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      ).set;
+      nativeSetter.call(element, text);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      // Select all existing content then replace via execCommand
+      // This works with ProseMirror (Claude) and React contenteditable (ChatGPT)
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.execCommand("insertText", false, text);
+    }
+  }
 
-  // Track whether we injected context (only capture responses after injection)
-  let contextInjected = false;
-  // Track captured responses to avoid duplicates
-  let lastCapturedText = "";
-  // Debounce timer for response completion detection
-  let captureTimer = null;
+  function getSendButton() {
+    const selectors = {
+      chatgpt: [
+        'button[data-testid="send-button"]',
+        'button[aria-label="Send prompt"]',
+        'button[aria-label="Send"]',
+      ],
+      claude: [
+        'button[aria-label="Send Message"]',
+        'button[aria-label="Send message"]',
+      ],
+      gemini: [
+        'button.send-button',
+        'button[aria-label="Send message"]',
+      ],
+    };
 
-  // Selectors for AI response messages on each platform
-  function getResponseSelectors(platform) {
+    for (const sel of selectors[platform] || []) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  // --- DOM Message Selectors ---
+
+  function getUserMessageSelector() {
+    return {
+      chatgpt: '[data-message-author-role="user"]',
+      claude: '[data-testid="user-message"]',
+      gemini: ".query-text, .user-query",
+    }[platform];
+  }
+
+  function getResponseSelectors() {
     return {
       chatgpt: {
-        // ChatGPT: assistant messages contain markdown content
         container: '[data-message-author-role="assistant"]',
         content: ".markdown",
-        // The streaming indicator (stop button visible = still streaming)
         streaming: 'button[aria-label="Stop streaming"]',
       },
       claude: {
-        // Claude.ai: assistant messages
-        container: '[data-is-streaming]',
+        container: "[data-is-streaming]",
         content: ".font-claude-message",
         streaming: '[data-is-streaming="true"]',
       },
       gemini: {
-        // Gemini: model response turns
         container: "model-response",
         content: ".model-response-text",
         streaming: ".loading-indicator",
@@ -111,191 +130,222 @@
     }[platform];
   }
 
-  // Extract the last AI response text
-  function getLastResponseText() {
-    const sel = getResponseSelectors(platform);
+  function getLastUserMessageFromDOM() {
+    const sel = getUserMessageSelector();
     if (!sel) return null;
+    const messages = document.querySelectorAll(sel);
+    if (messages.length === 0) return null;
+    return messages[messages.length - 1].textContent?.trim() || null;
+  }
 
+  function getLastResponseText() {
+    const sel = getResponseSelectors();
+    if (!sel) return null;
     const messages = document.querySelectorAll(sel.container);
     if (messages.length === 0) return null;
-
     const lastMsg = messages[messages.length - 1];
     const contentEl = sel.content
       ? lastMsg.querySelector(sel.content) || lastMsg
       : lastMsg;
-
     return contentEl.textContent?.trim() || null;
   }
 
-  // Check if the AI is still streaming
   function isStreaming() {
-    const sel = getResponseSelectors(platform);
+    const sel = getResponseSelectors();
     if (!sel || !sel.streaming) return false;
     return document.querySelector(sel.streaming) !== null;
   }
 
-  // Send captured response to server
-  function captureResponse(text) {
-    if (!text || text === lastCapturedText || text.length < 10) return;
-    lastCapturedText = text;
+  // --- State ---
+
+  let isLoadingContext = false;
+  let lastUserMessage = "";
+  let lastCapturedResponse = "";
+  let captureTimer = null;
+  let userMessageCount = 0;
+
+  // --- Status Indicator (minimal, unobtrusive) ---
+
+  const indicator = document.createElement("div");
+  indicator.id = "easybase-indicator";
+  indicator.textContent = "EB";
+  indicator.title = "Easybase active";
+  document.body.appendChild(indicator);
+
+  function showLoading() {
+    indicator.textContent = "EB \u231B";
+    indicator.title = "Loading Easybase context...";
+    indicator.classList.add("eb-loading");
+  }
+
+  function hideLoading() {
+    indicator.textContent = "EB";
+    indicator.title = "Easybase active";
+    indicator.classList.remove("eb-loading");
+  }
+
+  // --- Send Interception ---
+
+  function shouldIntercept() {
+    if (isLoadingContext) return false;
+    const input = getInputElement();
+    if (!input) return false;
+    const text = getInputText(input).trim();
+    if (!text) return false;
+    return { input, text };
+  }
+
+  function handleInterceptedSend(input, text) {
+    isLoadingContext = true;
+    showLoading();
+    lastUserMessage = text;
 
     chrome.runtime.sendMessage(
-      { action: "respond", text: text },
+      { action: "load", query: text, mode: "web" },
       (response) => {
-        if (chrome.runtime.lastError) return;
-        // Silent capture — no UI feedback needed
+        if (chrome.runtime.lastError) {
+          // Extension error — send without context
+          finishSend(input, text);
+          return;
+        }
+
+        if (response && response.context && response.context.trim()) {
+          const ctx = response.context.trim();
+          const combined =
+            "[Easybase Context]\n" +
+            ctx +
+            "\n[/Easybase Context]\n\n" +
+            text;
+          finishSend(input, combined);
+        } else if (response && response.error) {
+          // Server error — send without context
+          finishSend(input, text);
+        } else {
+          finishSend(input, text);
+        }
       }
     );
   }
 
-  // Attempt to capture after streaming stops
+  function finishSend(input, finalText) {
+    setInputText(input, finalText);
+    hideLoading();
+
+    // Small delay for the framework to process input change
+    setTimeout(() => {
+      const sendBtn = getSendButton();
+      if (sendBtn) {
+        sendBtn.click();
+      } else {
+        // Fallback: dispatch Enter key
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            code: "Enter",
+            keyCode: 13,
+            which: 13,
+            bubbles: true,
+            cancelable: true,
+          })
+        );
+      }
+      // Keep isLoadingContext true briefly so our interceptors don't re-catch
+      setTimeout(() => {
+        isLoadingContext = false;
+      }, 300);
+    }, 100);
+  }
+
+  // Intercept Enter key on chat input (capture phase — runs before platform handlers)
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey)
+        return;
+
+      const result = shouldIntercept();
+      if (!result) return;
+
+      const input = result.input;
+      if (!input.contains(e.target) && e.target !== input) return;
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      handleInterceptedSend(input, result.text);
+    },
+    true
+  );
+
+  // Intercept send button click (capture phase)
+  document.addEventListener(
+    "click",
+    (e) => {
+      const sendBtn = getSendButton();
+      if (!sendBtn) return;
+      if (!sendBtn.contains(e.target) && e.target !== sendBtn) return;
+
+      const result = shouldIntercept();
+      if (!result) return;
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      handleInterceptedSend(result.input, result.text);
+    },
+    true
+  );
+
+  // --- Auto-capture: detect new user messages and store exchanges ---
+
+  function checkForNewUserMessage() {
+    const sel = getUserMessageSelector();
+    if (!sel) return;
+    const messages = document.querySelectorAll(sel);
+    if (messages.length > userMessageCount) {
+      userMessageCount = messages.length;
+      const text = messages[messages.length - 1].textContent?.trim();
+      if (text && text.length > 0) {
+        lastUserMessage = text;
+      }
+    }
+  }
+
+  function storeExchange(query, responseText) {
+    if (!responseText || responseText === lastCapturedResponse) return;
+    if (responseText.length < 50) return;
+    lastCapturedResponse = responseText;
+
+    chrome.runtime.sendMessage(
+      { action: "exchange", query: query || "", response: responseText },
+      () => {
+        if (chrome.runtime.lastError) return;
+      }
+    );
+  }
+
   function tryCapture() {
-    if (!contextInjected) return;
     if (isStreaming()) {
-      // Still streaming, check again later
       clearTimeout(captureTimer);
       captureTimer = setTimeout(tryCapture, 1000);
       return;
     }
 
-    const text = getLastResponseText();
-    if (text) {
-      captureResponse(text);
+    const responseText = getLastResponseText();
+    if (responseText && responseText !== lastCapturedResponse) {
+      const query = lastUserMessage || getLastUserMessageFromDOM() || "";
+      storeExchange(query, responseText);
     }
   }
 
-  // Set up MutationObserver to watch for new AI responses
-  function startResponseObserver() {
-    const observer = new MutationObserver((mutations) => {
-      if (!contextInjected) return;
+  // --- MutationObserver: watch for chat changes ---
 
-      // When DOM changes, debounce and check for completed response
-      clearTimeout(captureTimer);
-      captureTimer = setTimeout(tryCapture, 2000);
-    });
-
-    // Observe the main chat area for child changes
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-  }
-
-  startResponseObserver();
-
-  // --- UI: Floating button and panel ---
-
-  // Create floating button
-  const btn = document.createElement("div");
-  btn.id = "easybase-fab";
-  btn.textContent = "EB";
-  btn.title = "Load Easybase Context";
-  document.body.appendChild(btn);
-
-  // Create panel
-  const panel = document.createElement("div");
-  panel.id = "easybase-panel";
-  panel.innerHTML = `
-    <div class="eb-panel-header">
-      <span>Easybase</span>
-      <span id="eb-status-dot" class="eb-dot eb-dot-unknown"></span>
-      <button id="eb-close" class="eb-close-btn">&times;</button>
-    </div>
-    <div class="eb-panel-body">
-      <input type="text" id="eb-query" placeholder="Enter your query..." />
-      <button id="eb-load-btn" class="eb-action-btn">Load Context</button>
-      <div id="eb-message" class="eb-message"></div>
-    </div>
-  `;
-  document.body.appendChild(panel);
-
-  // State
-  let panelOpen = false;
-
-  // Toggle panel
-  btn.addEventListener("click", () => {
-    panelOpen = !panelOpen;
-    panel.style.display = panelOpen ? "block" : "none";
-    if (panelOpen) {
-      checkStatus();
-      document.getElementById("eb-query").focus();
-    }
+  const observer = new MutationObserver(() => {
+    checkForNewUserMessage();
+    clearTimeout(captureTimer);
+    captureTimer = setTimeout(tryCapture, 2000);
   });
 
-  // Close button
-  document.getElementById("eb-close").addEventListener("click", () => {
-    panelOpen = false;
-    panel.style.display = "none";
-  });
-
-  // Check server status
-  function checkStatus() {
-    chrome.runtime.sendMessage({ action: "status" }, (response) => {
-      const dot = document.getElementById("eb-status-dot");
-      if (response && response.ok) {
-        dot.className = "eb-dot eb-dot-ok";
-        dot.title = `Connected (${response.chunks} chunks)`;
-      } else {
-        dot.className = "eb-dot eb-dot-error";
-        dot.title = "Server not reachable";
-      }
-    });
-  }
-
-  // Load context
-  document.getElementById("eb-load-btn").addEventListener("click", () => {
-    const queryInput = document.getElementById("eb-query");
-    const query = queryInput.value.trim();
-    const msgEl = document.getElementById("eb-message");
-
-    if (!query) {
-      msgEl.textContent = "Enter a query first.";
-      msgEl.className = "eb-message eb-error";
-      return;
-    }
-
-    msgEl.textContent = "Loading...";
-    msgEl.className = "eb-message eb-loading";
-
-    chrome.runtime.sendMessage(
-      { action: "load", query: query },
-      (response) => {
-        if (response && response.error) {
-          msgEl.textContent = response.error;
-          msgEl.className = "eb-message eb-error";
-          return;
-        }
-
-        if (response && response.context) {
-          // Inject into chat input
-          const input = getInputElement(platform);
-          if (input) {
-            const existing = getInputText(input);
-            const combined = response.context + "\n\n" + existing;
-            setInputText(input, combined);
-            msgEl.textContent = "Context injected into chat input.";
-            msgEl.className = "eb-message eb-success";
-            // Mark context as injected — enable auto-capture
-            contextInjected = true;
-            lastCapturedText = "";
-            // Close panel after success
-            setTimeout(() => {
-              panelOpen = false;
-              panel.style.display = "none";
-            }, 1500);
-          } else {
-            msgEl.textContent = "Could not find chat input field. Try clicking in the chat box first.";
-            msgEl.className = "eb-message eb-error";
-          }
-        }
-      }
-    );
-  });
-
-  // Enter key to load
-  document.getElementById("eb-query").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      document.getElementById("eb-load-btn").click();
-    }
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
   });
 })();
