@@ -21,6 +21,7 @@ The knowledge tree abstracts the entire knowledge base into a compact structural
 - **Full inventory prevents missed info** — Every load output lists ALL chunks, so the AI can spot what BM25 didn't match.
 - **Scales without slowing down** — Search time is proportional to matches, not corpus size. The inverted index never scans the full corpus.
 - **AI manages everything** — The AI creates chunks, writes summaries, and maintains the knowledge base. You just use it.
+- **Concurrent-safe** — Multiple AI sessions can read and write simultaneously. Per-session state tracking, atomic writes, and file locking prevent any interference.
 - **Automatic capture** — Every prompt and response is recorded automatically.
 - **Human-readable storage** — All chunks are plain Markdown. No database, no binary formats.
 - **Audit trail** — Every operation logged with timestamps.

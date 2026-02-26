@@ -9,9 +9,16 @@ import platform
 import re
 import shutil
 import sys
+import tempfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False  # Windows fallback — no locking
 
 
 class EasybaseError(Exception):
@@ -37,6 +44,40 @@ def _resolve_base_dir(base_dir=None):
         return base_dir
     return os.environ.get("EASYBASE_DIR", DEFAULT_DATA_DIR)
 
+
+def _atomic_write_json(path, data):
+    """Write JSON atomically via temp file + os.replace()."""
+    dir_name = os.path.dirname(path)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _locked_open(lock_path, exclusive=True):
+    """Context manager that acquires a file lock. No-op on Windows."""
+    class _Lock:
+        def __init__(self):
+            self._f = None
+        def __enter__(self):
+            if HAS_FCNTL:
+                self._f = open(lock_path, 'w')
+                fcntl.flock(self._f.fileno(),
+                            fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            return self
+        def __exit__(self, *exc):
+            if self._f:
+                self._f.close()
+    return _Lock()
+
+
 # --- Defaults ---
 
 CHUNKS_DIR = "chunks"
@@ -53,6 +94,8 @@ PROJECTS_FILE = "projects.json"
 PENDING_STORE_FILE = ".pending_store"
 PENDING_EXTERNAL_FILE = ".pending_external"
 LAST_RESPONSE_FILE = ".last_response"
+INDEX_LOCK_FILE = ".index.lock"
+PROJECTS_LOCK_FILE = ".projects.lock"
 
 SCAN_TARGETS = [
     "CLAUDE.md", ".cursorrules", ".cursorignore",
@@ -278,44 +321,44 @@ def load_config(base_dir=None):
 
 # --- Store Enforcement ---
 
-def _set_pending_store(query, base_dir):
+def _set_pending_store(query, base_dir, session_id="cli"):
     """Mark that a load was called and an answer storage is expected."""
-    path = os.path.join(base_dir, PENDING_STORE_FILE)
+    path = os.path.join(base_dir, f"{PENDING_STORE_FILE}.{session_id}")
     with open(path, 'w', encoding='utf-8') as f:
         f.write(query[:200])
 
-def _clear_pending_store(base_dir):
+def _clear_pending_store(base_dir, session_id="cli"):
     """Mark that the AI stored its answer (called after easybase_add)."""
-    path = os.path.join(base_dir, PENDING_STORE_FILE)
+    path = os.path.join(base_dir, f"{PENDING_STORE_FILE}.{session_id}")
     if os.path.exists(path):
         os.remove(path)
 
-def _check_pending_store(base_dir):
+def _check_pending_store(base_dir, session_id="cli"):
     """Check if the AI skipped storing its answer from the previous load.
     Returns the previous query if skipped, None otherwise."""
-    path = os.path.join(base_dir, PENDING_STORE_FILE)
+    path = os.path.join(base_dir, f"{PENDING_STORE_FILE}.{session_id}")
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             return f.read().strip()
     return None
 
-def _save_last_response(content, base_dir):
+def _save_last_response(content, base_dir, session_id="cli"):
     """Save full AI response for auto-attachment to the next chunk."""
-    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    path = os.path.join(base_dir, f"{LAST_RESPONSE_FILE}.{session_id}")
     with open(path, 'w', encoding='utf-8') as f:
         f.write(content)
 
-def _read_last_response(base_dir):
+def _read_last_response(base_dir, session_id="cli"):
     """Read the saved full response. Returns content or None."""
-    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    path = os.path.join(base_dir, f"{LAST_RESPONSE_FILE}.{session_id}")
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
     return None
 
-def _consume_last_response(base_dir):
+def _consume_last_response(base_dir, session_id="cli"):
     """Read and delete the saved full response. Returns content or None."""
-    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    path = os.path.join(base_dir, f"{LAST_RESPONSE_FILE}.{session_id}")
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -323,41 +366,55 @@ def _consume_last_response(base_dir):
         return content
     return None
 
-def _clear_last_response(base_dir):
+def _clear_last_response(base_dir, session_id="cli"):
     """Delete the saved full response."""
-    path = os.path.join(base_dir, LAST_RESPONSE_FILE)
+    path = os.path.join(base_dir, f"{LAST_RESPONSE_FILE}.{session_id}")
     if os.path.exists(path):
         os.remove(path)
 
-def _set_pending_external(base_dir):
+def _set_pending_external(base_dir, session_id="cli"):
     """Mark that the AI must declare external source handling."""
-    path = os.path.join(base_dir, PENDING_EXTERNAL_FILE)
+    path = os.path.join(base_dir, f"{PENDING_EXTERNAL_FILE}.{session_id}")
     with open(path, 'w', encoding='utf-8') as f:
         f.write("pending")
 
-def _check_pending_external(base_dir):
+def _check_pending_external(base_dir, session_id="cli"):
     """Check if the AI skipped the external source declaration."""
-    path = os.path.join(base_dir, PENDING_EXTERNAL_FILE)
+    path = os.path.join(base_dir, f"{PENDING_EXTERNAL_FILE}.{session_id}")
     return os.path.exists(path)
 
-def _clear_pending_external(base_dir):
+def _clear_pending_external(base_dir, session_id="cli"):
     """Clear the external source declaration flag."""
-    path = os.path.join(base_dir, PENDING_EXTERNAL_FILE)
+    path = os.path.join(base_dir, f"{PENDING_EXTERNAL_FILE}.{session_id}")
     if os.path.exists(path):
         os.remove(path)
 
-def _declare_external(action, base_dir=None):
+def _declare_external(action, base_dir=None, session_id="cli"):
     """Declare external source handling. Called after easybase_add."""
     base_dir = _resolve_base_dir(base_dir)
     action = action.strip().lower()
     if action not in ("done", "none"):
         raise EasybaseError('action must be "done" or "none"')
-    if not _check_pending_external(base_dir):
+    if not _check_pending_external(base_dir, session_id):
         return "No pending external declaration needed."
-    _clear_pending_external(base_dir)
+    _clear_pending_external(base_dir, session_id)
     if action == "none":
         return "Declared: no external sources used."
     return "Declared: external information stored."
+
+def _cleanup_stale_flags(base_dir, max_age_hours=24):
+    """Remove flag files older than max_age_hours (from crashed sessions)."""
+    now = datetime.now().timestamp()
+    cutoff = now - (max_age_hours * 3600)
+    for prefix in (PENDING_STORE_FILE, PENDING_EXTERNAL_FILE, LAST_RESPONSE_FILE):
+        for entry in os.listdir(base_dir):
+            if entry.startswith(f"{prefix}."):
+                path = os.path.join(base_dir, entry)
+                try:
+                    if os.path.getmtime(path) < cutoff:
+                        os.remove(path)
+                except OSError:
+                    pass
 
 def _store_reminder():
     """Return the mandatory store reminder appended to every load output."""
@@ -381,6 +438,8 @@ def log_change(message, base_dir=None):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     with open(log_path, 'a', encoding='utf-8') as f:
+        if HAS_FCNTL:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         f.write(f"{ts} {message}\n")
 
 
@@ -644,8 +703,9 @@ def _save_projects_registry(registry, base_dir=None):
     """Save projects.json registry."""
     base_dir = _resolve_base_dir(base_dir)
     path = os.path.join(base_dir, PROJECTS_FILE)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(registry, f, indent=2)
+    lock_path = os.path.join(base_dir, PROJECTS_LOCK_FILE)
+    with _locked_open(lock_path, exclusive=True):
+        _atomic_write_json(path, registry)
 
 
 # --- Tokenizer ---
@@ -827,8 +887,9 @@ def build_index(base_dir=None):
     }
 
     index_path = os.path.join(base_dir, INDEX_FILE)
-    with open(index_path, 'w', encoding='utf-8') as f:
-        json.dump(index, f, indent=2)
+    lock_path = os.path.join(base_dir, INDEX_LOCK_FILE)
+    with _locked_open(lock_path, exclusive=True):
+        _atomic_write_json(index_path, index)
 
     print(f"Indexed {N} chunks, {len(inverted)} unique terms \u2192 {INDEX_FILE}")
 
@@ -1364,8 +1425,9 @@ def _auto_capture(content, msg_type, base_dir=None):
     sessions_dir = os.path.join(base_dir, INBOX_DIR, "sessions")
     os.makedirs(sessions_dir, exist_ok=True)
 
-    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    ts_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+    now = datetime.now()
+    ts = now.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    ts_file = now.strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{ts_file}_{msg_type}.md"
     filepath = os.path.join(sessions_dir, filename)
 
@@ -1414,7 +1476,7 @@ def _check_project_freshness(base_dir=None):
 
 # --- Internal API (used by MCP and HTTP servers) ---
 
-def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
+def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None, session_id="cli"):
     """Build and return the full context block as a string.
 
     mode='web': Compact output for browser extension injection.
@@ -1423,6 +1485,12 @@ def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
     """
     base_dir = _resolve_base_dir(base_dir)
     config = load_config(base_dir)
+
+    # Clean up stale flag files from crashed sessions
+    try:
+        _cleanup_stale_flags(base_dir)
+    except OSError:
+        pass
 
     # Auto-capture the user's query
     _auto_capture(query, "query", base_dir)
@@ -1466,13 +1534,14 @@ def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
     out.write("[CONTEXT]\n")
 
     # Check if the AI skipped storing its answer from the previous load
-    skipped_query = _check_pending_store(base_dir)
+    skipped_query = _check_pending_store(base_dir, session_id)
     if skipped_query:
         # Safety net: if the orphaned response still exists, auto-save it
-        orphaned = _read_last_response(base_dir)
-        _clear_last_response(base_dir)
+        orphaned = _read_last_response(base_dir, session_id)
+        _clear_last_response(base_dir, session_id)
         if orphaned and len(orphaned.strip()) >= 50:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            now = datetime.now()
+            ts = now.strftime("%Y%m%d_%H%M%S_%f")
             auto_tags = _basic_auto_tags(skipped_query + " " + orphaned[:2000])
             auto_tags.append("auto-saved")
             try:
@@ -1484,6 +1553,7 @@ def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
                     tags=", ".join(auto_tags),
                     tree_path="sessions/auto",
                     base_dir=base_dir,
+                    session_id=session_id,
                 )
             except EasybaseError:
                 pass
@@ -1500,18 +1570,18 @@ def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None):
             out.write("DO NOT repeat this. After answering THIS query, you MUST call easybase_add.\n\n")
     else:
         # No violation — clean up any stale last_response
-        _clear_last_response(base_dir)
+        _clear_last_response(base_dir, session_id)
 
     # Check if the AI skipped the external source declaration
-    if _check_pending_external(base_dir):
+    if _check_pending_external(base_dir, session_id):
         out.write("# !! VIOLATION: You did NOT declare external sources !!\n")
         out.write("After storing your answer, you MUST call easybase_external(\"done\")\n")
         out.write("or easybase_external(\"none\"). You skipped this step.\n")
         out.write("DO NOT repeat this. After easybase_add, ALWAYS call easybase_external.\n\n")
-        _clear_pending_external(base_dir)
+        _clear_pending_external(base_dir, session_id)
 
     # Set pending — cleared when easybase_add is called
-    _set_pending_store(query, base_dir)
+    _set_pending_store(query, base_dir, session_id)
 
     # Always include soul.md first
     soul_path = os.path.join(base_dir, SOUL_FILE)
@@ -1641,7 +1711,7 @@ def _search_results(query, base_dir=None, top_k=None, scope=None):
 
 
 def _add_chunk(chunk_id, summary, body="", domain="", tags="",
-               depends="", tree_path="", base_dir=None):
+               depends="", tree_path="", base_dir=None, session_id="cli"):
     """Create a chunk file, symlink, rebuild index. Returns status message.
 
     If a full AI response was saved by easybase_respond, it is automatically
@@ -1653,7 +1723,7 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
         raise EasybaseError("--id and --summary are required.")
 
     # Auto-attach full response from easybase_respond (prevents lazy storage)
-    last_response = _consume_last_response(base_dir)
+    last_response = _consume_last_response(base_dir, session_id)
     if last_response and len(last_response.strip()) >= 50:
         if body and len(body.strip()) > 0:
             # AI provided annotation — check if it's already the full response
@@ -1715,10 +1785,10 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
 
     # Clear the pending store flag — the AI fulfilled its obligation
     # If this was the answer store (pending_store existed), set pending_external
-    was_answer_store = _check_pending_store(base_dir) is not None
-    _clear_pending_store(base_dir)
+    was_answer_store = _check_pending_store(base_dir, session_id) is not None
+    _clear_pending_store(base_dir, session_id)
     if was_answer_store:
-        _set_pending_external(base_dir)
+        _set_pending_external(base_dir, session_id)
 
     # Rebuild index silently
     old_stdout = sys.stdout
@@ -1737,7 +1807,7 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
     return f"Chunk {status}: {chunk_id} — {summary} [tags: {tag_preview}] ({total} chunks total)"
 
 
-def _store_exchange(query, response_text, base_dir=None):
+def _store_exchange(query, response_text, base_dir=None, session_id="cli"):
     """Auto-store a Q&A exchange as a searchable chunk.
 
     Used by the browser extension to store web AI responses automatically.
@@ -1752,12 +1822,13 @@ def _store_exchange(query, response_text, base_dir=None):
     if query:
         _auto_capture(query, "query", base_dir)
     try:
-        _record_response(response_text, base_dir)
+        _record_response(response_text, base_dir, session_id=session_id)
     except EasybaseError:
         pass  # Enforcement errors don't apply to web captures
 
     # Generate searchable chunk
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    now = datetime.now()
+    ts = now.strftime("%Y%m%d_%H%M%S_%f")
     chunk_id = f"web-{ts}"
 
     summary = query[:200].strip() if query else response_text.split("\n")[0][:200].strip()
@@ -1776,10 +1847,11 @@ def _store_exchange(query, response_text, base_dir=None):
         depends="",
         tree_path="sessions/web",
         base_dir=base_dir,
+        session_id=session_id,
     )
 
 
-def _record_response(content, base_dir=None):
+def _record_response(content, base_dir=None, session_id="cli"):
     """Record AI response with enforcement check. Returns status message."""
     base_dir = _resolve_base_dir(base_dir)
     if not content or not content.strip():
@@ -1803,8 +1875,9 @@ def _record_response(content, base_dir=None):
     sessions_dir = os.path.join(base_dir, INBOX_DIR, "sessions")
     os.makedirs(sessions_dir, exist_ok=True)
 
-    ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    ts_file = datetime.now().strftime("%Y%m%d_%H%M%S")
+    now = datetime.now()
+    ts = now.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    ts_file = now.strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{ts_file}_response.md"
     filepath = os.path.join(sessions_dir, filename)
 
@@ -1817,7 +1890,7 @@ def _record_response(content, base_dir=None):
         f.write("\n".join(file_lines))
 
     # Save full response for auto-attachment to the next easybase_add chunk
-    _save_last_response(content, base_dir)
+    _save_last_response(content, base_dir, session_id)
 
     log_change(f"CAPTURE response:{filename}", base_dir)
 
@@ -2229,7 +2302,8 @@ def cmd_load(args, base_dir=None):
         else:
             i += 1
 
-    print(_load_context(query, base_dir, top_k, scope))
+    session_id = os.environ.get("EASYBASE_SESSION", "cli")
+    print(_load_context(query, base_dir, top_k, scope, session_id=session_id))
 
 
 def _format_all_chunks(index, matched_ids):
@@ -2304,7 +2378,8 @@ def cmd_add(args, base_dir=None):
         sys.exit(1)
 
     try:
-        result = _add_chunk(chunk_id, summary, body, domain, tags, depends, tree_path, base_dir)
+        session_id = os.environ.get("EASYBASE_SESSION", "cli")
+        result = _add_chunk(chunk_id, summary, body, domain, tags, depends, tree_path, base_dir, session_id=session_id)
         print(result)
     except EasybaseError as e:
         print(f"Error: {e}")
@@ -2451,7 +2526,8 @@ def cmd_respond(args, base_dir=None):
             sys.exit(1)
 
     try:
-        result = _record_response(content, base_dir)
+        session_id = os.environ.get("EASYBASE_SESSION", "cli")
+        result = _record_response(content, base_dir, session_id=session_id)
         print(result)
     except EasybaseError as e:
         print(f"Error: {e}")

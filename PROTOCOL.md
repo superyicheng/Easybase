@@ -255,6 +255,31 @@ write new `_summary.md` files, move chunk symlinks.
 4. For each subtask, only swap the specific chunks
 5. After all subtasks, update summaries with new understanding
 
+## Multi-agent and concurrent access
+
+Easybase supports multiple agents working simultaneously. Each MCP
+connection gets its own session — obligation tracking (pending store,
+external declaration) is per-session and cannot interfere with other
+sessions.
+
+### Agent teams
+
+If sub-agents have their own MCP connection to Easybase:
+- Each sub-agent stores its own findings directly via `easybase_add`
+- The main agent should `easybase_search` before storing to avoid duplicates
+- Sub-agents' stored chunks are immediately searchable by all agents
+
+If sub-agents do NOT have MCP access:
+- The main agent stores on their behalf
+- Include the sub-agent's role or identity in the chunk metadata
+
+### Multiple simultaneous sessions
+
+Multiple Claude Code instances, Cursor sessions, or other MCP clients
+can use Easybase at the same time. The index is rebuilt atomically with
+file locking — no corruption risk. Chunks added by one session are
+immediately available to all others after their next search or load.
+
 ## Imported projects
 
 Imported project files live under `knowledge/projects/<name>/` with

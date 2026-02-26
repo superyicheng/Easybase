@@ -26,10 +26,13 @@ Configure in Claude Code:
 
 import os
 import sys
+import uuid
 
 # Add this directory to path so we can import ctx
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ctx
+
+SESSION_ID = uuid.uuid4().hex[:8]
 
 from mcp.server.fastmcp import FastMCP
 
@@ -45,7 +48,7 @@ BASE_DIR = os.environ.get("EASYBASE_DIR", os.path.expanduser("~/.easybase"))
 
 
 @mcp.tool()
-def easybase_load(query: str, scope: str = "") -> str:
+def easybase_load(query: str, scope: str = "", session_id: str = "") -> str:
     """Load context from the Easybase knowledge base. Call this FIRST for every user message.
 
     Returns soul.md + protocol + all matching chunks + full inventory of all chunks.
@@ -56,9 +59,11 @@ def easybase_load(query: str, scope: str = "") -> str:
     Args:
         query: The user's message or search query
         scope: Limit search to a knowledge tree path (e.g. "api/auth")
+        session_id: Optional session identifier for concurrent access
     """
     try:
-        return ctx._load_context(query, BASE_DIR, scope=scope or None)
+        sid = session_id or SESSION_ID
+        return ctx._load_context(query, BASE_DIR, scope=scope or None, session_id=sid)
     except ctx.EasybaseError as e:
         return f"Error: {e}"
 
@@ -89,7 +94,8 @@ def easybase_search(query: str, scope: str = "") -> str:
 @mcp.tool()
 def easybase_add(id: str, summary: str, body: str = "",
                  domain: str = "", tags: str = "",
-                 depends: str = "", tree_path: str = "") -> str:
+                 depends: str = "", tree_path: str = "",
+                 session_id: str = "") -> str:
     """Store new knowledge as a chunk. The full response from easybase_respond
     is auto-attached as the body — you do NOT need to paste your answer.
     Focus on writing a good summary and comprehensive synonym tags.
@@ -102,15 +108,17 @@ def easybase_add(id: str, summary: str, body: str = "",
         tags: Comma-separated synonyms and aliases for search (CRITICAL for findability)
         depends: Comma-separated chunk IDs this knowledge builds on
         tree_path: Location in knowledge tree (e.g. "api/auth")
+        session_id: Optional session identifier for concurrent access
     """
     try:
-        return ctx._add_chunk(id, summary, body, domain, tags, depends, tree_path, BASE_DIR)
+        sid = session_id or SESSION_ID
+        return ctx._add_chunk(id, summary, body, domain, tags, depends, tree_path, BASE_DIR, session_id=sid)
     except ctx.EasybaseError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def easybase_respond(response_text: str) -> str:
+def easybase_respond(response_text: str, session_id: str = "") -> str:
     """Record your response. Call AFTER answering the user.
 
     If enforcement mode is on, response must contain CITED: [chunk-id-1, chunk-id-2, ...]
@@ -118,15 +126,17 @@ def easybase_respond(response_text: str) -> str:
 
     Args:
         response_text: Your complete response to the user
+        session_id: Optional session identifier for concurrent access
     """
     try:
-        return ctx._record_response(response_text, BASE_DIR)
+        sid = session_id or SESSION_ID
+        return ctx._record_response(response_text, BASE_DIR, session_id=sid)
     except ctx.EasybaseError as e:
         return f"Error: {e}"
 
 
 @mcp.tool()
-def easybase_external(action: str) -> str:
+def easybase_external(action: str, session_id: str = "") -> str:
     """MANDATORY: Declare external source handling after storing your answer.
 
     You MUST call this after every easybase_add. This forces you to think about
@@ -135,9 +145,11 @@ def easybase_external(action: str) -> str:
 
     Args:
         action: "done" (stored external info as chunks) or "none" (no external sources used)
+        session_id: Optional session identifier for concurrent access
     """
     try:
-        return ctx._declare_external(action, BASE_DIR)
+        sid = session_id or SESSION_ID
+        return ctx._declare_external(action, BASE_DIR, session_id=sid)
     except ctx.EasybaseError as e:
         return f"Error: {e}"
 

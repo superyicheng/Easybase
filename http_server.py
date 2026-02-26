@@ -75,7 +75,8 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                     return self._json_response({"error": "query parameter required"}, 400)
                 scope = params.get("scope", [None])[0]
                 mode = params.get("mode", [None])[0]
-                result = ctx._load_context(query, BASE_DIR, scope=scope, mode=mode)
+                session_id = params.get("session_id", ["web"])[0]
+                result = ctx._load_context(query, BASE_DIR, scope=scope, mode=mode, session_id=session_id)
                 self._text_response(result)
 
             elif path == "/api/search":
@@ -128,6 +129,7 @@ class EasybaseHandler(BaseHTTPRequestHandler):
 
         try:
             if parsed.path == "/api/add":
+                session_id = body.get("session_id", "web")
                 result = ctx._add_chunk(
                     chunk_id=body.get("id", ""),
                     summary=body.get("summary", ""),
@@ -137,12 +139,14 @@ class EasybaseHandler(BaseHTTPRequestHandler):
                     depends=body.get("depends", ""),
                     tree_path=body.get("tree_path", ""),
                     base_dir=BASE_DIR,
+                    session_id=session_id,
                 )
                 self._json_response({"ok": True, "message": result})
 
             elif parsed.path == "/api/respond":
                 text = body.get("text", "")
-                result = ctx._record_response(text, BASE_DIR)
+                session_id = body.get("session_id", "web")
+                result = ctx._record_response(text, BASE_DIR, session_id=session_id)
                 self._json_response({"ok": True, "message": result})
 
             elif parsed.path == "/api/index":
@@ -158,18 +162,20 @@ class EasybaseHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/exchange":
                 query = body.get("query", "")
                 response_text = body.get("response", "")
+                session_id = body.get("session_id", "web")
                 if not response_text:
                     return self._json_response(
                         {"error": "response is required"}, 400)
-                result = ctx._store_exchange(query, response_text, BASE_DIR)
+                result = ctx._store_exchange(query, response_text, BASE_DIR, session_id=session_id)
                 self._json_response({"ok": True, "message": result})
 
             elif parsed.path == "/api/external":
                 action = body.get("action", "")
+                session_id = body.get("session_id", "web")
                 if not action:
                     return self._json_response(
                         {"error": "action is required"}, 400)
-                result = ctx._declare_external(action, BASE_DIR)
+                result = ctx._declare_external(action, BASE_DIR, session_id=session_id)
                 self._json_response({"ok": True, "message": result})
 
             elif parsed.path == "/api/permit":

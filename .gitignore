@@ -9,6 +9,11 @@ config.yaml
 .pending_store
 .pending_external
 .last_response
+.pending_store.*
+.pending_external.*
+.last_response.*
+.index.lock
+.projects.lock
 soul.md
 permission.md
 
