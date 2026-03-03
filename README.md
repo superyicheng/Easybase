@@ -41,7 +41,7 @@ That's it. Init handles everything:
 1. **User Profile** — set up soul.md (your preferences, background, context for the AI)
 2. **Storage** — what the AI should store, enforcement mode
 3. **Project Discovery** — **import all your existing projects at once.** You choose which directories Easybase is allowed to scan (e.g. `~/Projects`, `~/work`). Easybase scans those directories for projects containing AI context files (CLAUDE.md, .cursorrules, README.md, etc.) and imports every project it finds as searchable knowledge chunks. You can select which projects to import, or import all of them. You can always import more later with `python3 ctx.py scan`.
-4. **MCP Server Registration** — automatically installs the `mcp` package and registers Easybase as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server. MCP is the standard protocol that lets AI tools call external tools — Easybase registers itself so the AI can load context, store knowledge, and search chunks through MCP tool calls. Auto-detects Claude Code; for Claude Desktop, Cursor, or Windsurf, it prints the exact config to copy.
+4. **MCP Server Registration** — automatically installs the `mcp` package and registers Easybase as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server with all detected AI tools. MCP is the standard protocol that lets AI tools call external tools — Easybase registers itself so the AI can load context, store knowledge, and search chunks through MCP tool calls. Auto-detects and auto-registers with Claude Code, Claude Desktop, Cursor, and Windsurf.
 
 After init, start a new session in your AI tool and Easybase loads automatically. Verify it's working by asking:
 
@@ -50,13 +50,13 @@ After init, start a new session in your AI tool and Easybase loads automatically
 
 ### Supported AI platforms
 
-| Platform | Connection | Setup |
-|----------|-----------|-------|
-| **Claude Code** | MCP (auto-registered) | `python3 ctx.py init` handles it |
-| **Claude Desktop** | MCP (manual config) | Init prints the JSON to paste into settings |
-| **Cursor** | MCP (manual config) | Init prints the JSON to paste into settings |
-| **Windsurf** | MCP (manual config) | Init prints the JSON to paste into settings |
-| **Any MCP-compatible tool** | MCP | Use the config from init |
+| Platform | Setup |
+|----------|-------|
+| **Claude Code** | Auto-registered during init |
+| **Claude Desktop** | Auto-registered during init |
+| **Cursor** | Auto-registered during init |
+| **Windsurf** | Auto-registered during init |
+| **Any MCP-compatible tool** | Init prints the config to copy |
 
 Available MCP tools: `easybase_load`, `easybase_search`, `easybase_add`, `easybase_respond`, `easybase_external`, `easybase_index`, `easybase_stats`, `easybase_ingest`, `easybase_scan`, `easybase_check`, `easybase_permit`
 
@@ -74,62 +74,6 @@ After setup, you just talk to the AI normally. Easybase works behind the scenes 
 4. **AI stores your info** → Any new information you provided is also saved as a chunk
 
 Everything accumulates. The more you use it, the more the AI knows about your projects, preferences, and past decisions.
-
-### Example: Building a web app across sessions
-
-**Session 1** — You ask: *"Help me set up authentication for my Express app"*
-- Easybase loads soul.md (knows you prefer TypeScript, use PostgreSQL)
-- AI answers with a complete auth setup using Passport.js + JWT
-- AI stores its answer as chunk `auth-setup-001` with tags: login, signin, jwt, passport, session, credentials
-- AI stores your preference as chunk `project-prefs-001`: "User chose JWT over sessions for auth"
-
-**Session 2** (days later) — You ask: *"Add password reset to my app"*
-- Easybase finds `auth-setup-001` — the AI sees the exact auth setup from Session 1
-- AI builds the password reset flow that matches your existing auth architecture
-- AI stores the answer as chunk `password-reset-001`
-
-**Session 3** — You ask: *"Why did we use JWT instead of sessions?"*
-- Easybase finds `project-prefs-001` and `auth-setup-001`
-- AI answers from stored context — no guessing, no "I don't have context from previous sessions"
-
-### Example: Research and decision-making
-
-**Session 1** — You ask: *"Compare Redis vs Memcached for our caching layer"*
-- AI researches and provides a detailed comparison
-- AI stores the comparison as chunk `cache-comparison-001`
-- AI stores your decision: "Chose Redis for persistence + pub/sub support"
-
-**Session 2** — A teammate asks: *"What caching solution are we using and why?"*
-- Easybase returns the stored comparison and decision
-- AI gives a complete answer with full rationale — no need to re-research
-
-### Example: External information capture (enforced)
-
-When the AI reads files, searches the web, or uses external tools, Easybase forces it to store the useful findings — not just its own answer. This is technically enforced: the AI must explicitly declare whether it used external sources after every answer. Skipping triggers a violation.
-
-**Session 1** — You ask: *"Help me understand how auth works in our codebase"*
-- AI reads `auth.py`, `middleware.py`, `routes.py`, `models/user.py`
-- AI answers with a summary of the auth architecture
-- AI stores its answer as chunk `auth-overview-001`
-- **AI stores external findings**: key facts from each file it read — token validation logic, middleware chain, route guards, user model schema — as separate chunks with file paths as source attribution
-- AI calls `easybase_external("done")`
-
-**Session 2** (weeks later) — You ask: *"How does token refresh work?"*
-- Easybase finds the stored file findings from Session 1
-- AI answers immediately from stored knowledge — no need to re-read the source files
-- Even if the AI in Session 1 wrote a vague summary, the raw file findings are there
-
-Without this enforcement, only the AI's summary would survive. The actual file contents — the specific logic, the edge cases, the implementation details — would be lost.
-
-### Example: Accumulating project knowledge
-
-Over weeks of use, the knowledge base naturally grows:
-- Bug fixes and their root causes → searchable for recurring issues
-- Architecture decisions and rationale → never lost in chat history
-- Code review findings → patterns the AI remembers and applies
-- Setup instructions → consistent onboarding across sessions
-- User preferences → the AI adapts to your style automatically
-- External source findings → files read, web searches, API outputs all preserved
 
 ### Where your data lives
 
@@ -209,8 +153,7 @@ Easybase/
 ├── mcp_server.py       MCP server (requires: pip install mcp)
 ├── http_server.py      HTTP server for browser extension (stdlib only)
 ├── PROTOCOL.md         AI instructions (copied to data dir during init)
-├── extension/          Browser extension (Chrome Manifest V3)
-└── test_ctx.py         Tests
+└── extension/          Browser extension (Chrome Manifest V3)
 ```
 
 **Data** (`~/.easybase/`):

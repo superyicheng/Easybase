@@ -1089,6 +1089,72 @@ def _create_default_permission(permission_path):
         f.write('\n'.join(lines))
 
 
+def _get_mcp_platform_configs():
+    """Return config file paths for MCP-compatible AI platforms."""
+    system = platform.system()
+    home = os.path.expanduser("~")
+    configs = []
+
+    # Claude Desktop
+    if system == "Darwin":
+        cd_path = os.path.join(home, "Library", "Application Support",
+                               "Claude", "claude_desktop_config.json")
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        cd_path = os.path.join(appdata, "Claude", "claude_desktop_config.json")
+    else:
+        cd_path = os.path.join(home, ".config", "Claude",
+                               "claude_desktop_config.json")
+    configs.append(("Claude Desktop", cd_path))
+
+    # Cursor
+    configs.append(("Cursor", os.path.join(home, ".cursor", "mcp.json")))
+
+    # Windsurf
+    configs.append(("Windsurf", os.path.join(home, ".codeium", "windsurf",
+                                              "mcp_config.json")))
+
+    return configs
+
+
+def _register_mcp_json(config_path, mcp_server_path, abs_base):
+    """Register Easybase in a platform's MCP JSON config file.
+
+    Returns True if registered, False if config file location doesn't exist.
+    """
+    # Only register if the parent directory exists (platform is installed)
+    config_dir = os.path.dirname(config_path)
+    if not os.path.isdir(config_dir):
+        return False
+
+    # Read existing config or start fresh
+    config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            config = {}
+
+    # Ensure mcpServers section exists
+    if "mcpServers" not in config:
+        config["mcpServers"] = {}
+
+    # Add/update easybase entry
+    config["mcpServers"]["easybase"] = {
+        "command": sys.executable,
+        "args": [mcp_server_path],
+        "env": {"EASYBASE_DIR": abs_base}
+    }
+
+    # Write back atomically
+    tmp_path = config_path + ".tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
+    os.replace(tmp_path, config_path)
+    return True
+
+
 def cmd_init(base_dir=None):
     """Interactive setup — generates config.yaml and directory structure."""
     if base_dir is None:
@@ -1317,17 +1383,15 @@ def cmd_init(base_dir=None):
 
     # Detect and auto-register with Claude Code
     has_claude = shutil.which("claude") is not None
-    registered = False
+    registered = []
 
     if has_claude:
         print("Detected: Claude Code")
         import subprocess
-        # Remove existing registration if present (re-running init should just work)
         subprocess.run(
             ["claude", "mcp", "remove", "easybase", "-s", "user"],
             capture_output=True,
         )
-        print("  Registering Easybase as MCP server...")
         try:
             subprocess.run([
                 "claude", "mcp", "add", "--scope", "user",
@@ -1335,43 +1399,39 @@ def cmd_init(base_dir=None):
                 "-e", f"EASYBASE_DIR={abs_base}",
                 "--", sys.executable, mcp_server_path,
             ], capture_output=True, check=True)
-            print("  Registered. The MCP server tells Claude to load Easybase")
-            print("  automatically — no CLAUDE.md needed.")
-            registered = True
+            print("  Registered.")
+            registered.append("Claude Code")
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"  Auto-registration failed: {e}")
-            print(f"  Run manually:")
-            print(f"    claude mcp add --scope user --transport stdio easybase \\")
-            print(f"      -e EASYBASE_DIR={abs_base} \\")
-            print(f"      -- python3 {mcp_server_path}")
 
-    if not has_claude:
-        print("Claude Code not detected.")
+    # Auto-register with Claude Desktop, Cursor, Windsurf
+    for platform_name, config_path in _get_mcp_platform_configs():
+        if _register_mcp_json(config_path, mcp_server_path, abs_base):
+            print(f"Detected: {platform_name}")
+            print("  Registered.")
+            registered.append(platform_name)
+
+    if not registered:
+        print("No AI tools detected.")
         print()
-        print("For MCP apps (Claude Desktop, Cursor, Windsurf):")
-        print("  Register Easybase as an MCP server. The server automatically")
-        print("  instructs the AI to load Easybase — no config file changes needed.")
-        print()
-        print(f"  Claude Desktop (add to claude_desktop_config.json):")
-        print(f'    "easybase": {{"command": "python3",')
-        print(f'      "args": ["{mcp_server_path}"],')
-        print(f'      "env": {{"EASYBASE_DIR": "{abs_base}"}}}}')
-        print()
-        print(f"  Cursor / Windsurf: same command/args/env in MCP settings.")
-        print()
-        print("For web AI (ChatGPT, Claude.ai, Gemini):")
-        print("  Use the browser extension in the extension/ folder.")
-        print("  1. Run: python3 http_server.py")
-        print("  2. Load the extension in Chrome (chrome://extensions > Load unpacked)")
-        print("  The extension injects context and captures responses automatically.")
+        print("For any MCP-compatible tool, add this to its MCP config:")
+        print(f'  "easybase": {{"command": "{sys.executable}",')
+        print(f'    "args": ["{mcp_server_path}"],')
+        print(f'    "env": {{"EASYBASE_DIR": "{abs_base}"}}}}')
+
+    print()
+    print("For web AI (ChatGPT, Claude.ai, Gemini):")
+    print("  Use the browser extension in the extension/ folder.")
+    print("  1. Run: python3 http_server.py")
+    print("  2. Load the extension in Chrome (chrome://extensions > Load unpacked)")
 
     # --- Summary ---
     print()
     print("Setup complete!")
     print("=" * 40)
     if registered:
-        print("Easybase is ready. Start a new Claude Code session — it will")
-        print("load your knowledge base automatically.")
+        print(f"Registered with: {', '.join(registered)}")
+        print("Start a new session in your AI tool — Easybase loads automatically.")
     print()
     print("  Edit soul.md to describe yourself and your preferences.")
     print("  Edit permission.md to set what the AI can access and run.")
@@ -2687,14 +2747,15 @@ def cmd_update():
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("   Could not install mcp. Run manually: pip install --user mcp")
 
-    # Step 3: Re-register MCP server if Claude Code is available
+    # Step 3: Re-register MCP server with all detected platforms
     print("3. Checking MCP registration...")
+    base_dir = _resolve_base_dir()
+    abs_base = os.path.abspath(base_dir)
+    mcp_server_path = os.path.join(SCRIPT_DIR, "mcp_server.py")
+    registered = []
+
     has_claude = shutil.which("claude") is not None
     if has_claude:
-        base_dir = _resolve_base_dir()
-        abs_base = os.path.abspath(base_dir)
-        mcp_server_path = os.path.join(SCRIPT_DIR, "mcp_server.py")
-        # Remove and re-add to update paths
         subprocess.run(
             ["claude", "mcp", "remove", "easybase", "-s", "user"],
             capture_output=True,
@@ -2706,11 +2767,18 @@ def cmd_update():
                 "-e", f"EASYBASE_DIR={abs_base}",
                 "--", sys.executable, mcp_server_path,
             ], capture_output=True, check=True)
-            print("   MCP server re-registered.")
+            registered.append("Claude Code")
         except (subprocess.CalledProcessError, FileNotFoundError):
-            print("   MCP re-registration failed. Run init to fix.")
+            print("   Claude Code re-registration failed.")
+
+    for platform_name, config_path in _get_mcp_platform_configs():
+        if _register_mcp_json(config_path, mcp_server_path, abs_base):
+            registered.append(platform_name)
+
+    if registered:
+        print(f"   Re-registered with: {', '.join(registered)}")
     else:
-        print("   Claude Code not detected, skipping MCP.")
+        print("   No AI tools detected, skipping MCP.")
 
     # Step 4: Copy updated PROTOCOL.md to data dir
     print("4. Updating protocol in data directory...")
