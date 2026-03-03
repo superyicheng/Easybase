@@ -106,7 +106,7 @@ Pulls the latest code, installs any new dependencies, re-registers the MCP serve
 
 ## Benchmarks
 
-Tested from 10 to 10,000 chunks (~2.2M tokens — beyond all current AI context windows). Full benchmark source: [easybase-benchmark](https://github.com/superyicheng/easybase-benchmark).
+Tested from 10 to 10,000 chunks (~2.2M tokens — beyond all current AI context windows).
 
 ### Token Efficiency
 
