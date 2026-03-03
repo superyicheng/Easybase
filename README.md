@@ -43,7 +43,10 @@ That's it. Init handles everything:
 3. **Project Discovery** — **import all your existing projects at once.** You choose which directories Easybase is allowed to scan (e.g. `~/Projects`, `~/work`). Easybase scans those directories for projects containing AI context files (CLAUDE.md, .cursorrules, README.md, etc.) and imports every project it finds as searchable knowledge chunks. You can select which projects to import, or import all of them. You can always import more later with `python3 ctx.py scan`.
 4. **MCP Server Registration** — automatically installs the `mcp` package and registers Easybase as an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server. MCP is the standard protocol that lets AI tools call external tools — Easybase registers itself so the AI can load context, store knowledge, and search chunks through MCP tool calls. Auto-detects Claude Code; for Claude Desktop, Cursor, or Windsurf, it prints the exact config to copy.
 
-After init, start a new session in your AI tool and Easybase loads automatically.
+After init, start a new session in your AI tool and Easybase loads automatically. Verify it's working by asking:
+
+1. **"Where do you store the context?"** — The AI should mention Easybase, chunks, and the knowledge base.
+2. **"Did you store the last prompt and answer in Easybase?"** — The AI should confirm it stored both as chunks.
 
 ### Supported AI platforms
 
@@ -154,6 +157,36 @@ python3 ctx.py update
 ```
 
 Pulls the latest code, installs any new dependencies, re-registers the MCP server, and updates the protocol — all without touching your data. Run this whenever you want the latest version.
+
+---
+
+## Benchmarks
+
+Tested from 10 to 10,000 chunks (~2.2M tokens — beyond all current AI context windows). Full benchmark source: [easybase-benchmark](https://github.com/superyicheng/easybase-benchmark).
+
+### Token Efficiency
+
+At 10,000 chunks of stored knowledge, Easybase uses **4.16x fewer tokens per query** than loading everything into the context window. Native context loading requires 2.2M tokens — exceeding ChatGPT (256K), Claude (200K), and Gemini (1M). Easybase uses 539K tokens, retrieving only the chunks that match.
+
+![Token Efficiency](benchmarks/fig_token_efficiency.png)
+
+### Retrieval Quality
+
+**97% precision** (almost every returned chunk is relevant), **100% recall** (no relevant chunk is ever missed), and **MRR 1.0** (the best result always ranks first) — consistent from 10 to 10,000 chunks.
+
+![Retrieval Quality](benchmarks/fig_retrieval_quality.png)
+
+### Concurrent Sessions and Agent Teams
+
+Easybase supports multiple AI sessions writing simultaneously — this is how agent teams and sub-agents work in practice. Each session gets its own state tracking (pending flags, response buffers) via per-session files, while sharing the same knowledge base. All storage is automatic after init — no configuration changes needed for multi-session use.
+
+**What was tested:**
+- **Full lifecycle** — 8 simultaneous sessions, each running 3 complete load-respond-store cycles (96 total operations). Simulates multiple sub-agents or a user talking to different agents that all write to the same knowledge base. Zero errors, zero data loss.
+- **Session isolation** — Per-session flag files (pending_store, pending_external, last_response) are verified to never leak between sessions. One agent's state never interferes with another's.
+- **Atomic index writes** — 4 threads adding chunks concurrently. The search index uses file locking and atomic writes (write to temp file, then rename) so concurrent writes never corrupt the index.
+- **Write throughput** — 175+ chunks/second in both sequential and parallel modes, zero errors under contention.
+
+![Concurrency](benchmarks/fig_concurrency.png)
 
 ---
 

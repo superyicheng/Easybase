@@ -120,6 +120,8 @@ DEFAULT_SCAN_PATHS_LINUX = [
 DEFAULT_K1 = 1.5
 DEFAULT_B = 0.75
 DEFAULT_IDF_FLOOR = 0.1
+DEFAULT_SCORE_THRESHOLD = 0.25
+DEFAULT_TOP_K = 15
 
 STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -288,6 +290,8 @@ def _default_config(storage_mode="all", access_mode="sandbox",
             "bm25_k1": DEFAULT_K1,
             "bm25_b": DEFAULT_B,
             "idf_floor": DEFAULT_IDF_FLOOR,
+            "score_threshold": DEFAULT_SCORE_THRESHOLD,
+            "top_k": DEFAULT_TOP_K,
         },
         "tree": {"sibling_read": True},
     }
@@ -312,6 +316,8 @@ def load_config(base_dir=None):
     s.setdefault("bm25_k1", DEFAULT_K1)
     s.setdefault("bm25_b", DEFAULT_B)
     s.setdefault("idf_floor", DEFAULT_IDF_FLOOR)
+    s.setdefault("score_threshold", DEFAULT_SCORE_THRESHOLD)
+    s.setdefault("top_k", DEFAULT_TOP_K)
     config.setdefault("tree", {"sibling_read": True})
     e = config.setdefault("enforcement", {})
     e.setdefault("citation_required", False)
@@ -803,7 +809,7 @@ def parse_chunk(filepath):
 
 # --- Index Builder ---
 
-def build_index(base_dir=None):
+def build_index(base_dir=None, quiet=False):
     """Build BM25 inverted index from all chunks."""
     base_dir = _resolve_base_dir(base_dir)
     config = load_config(base_dir)
@@ -891,7 +897,8 @@ def build_index(base_dir=None):
     with _locked_open(lock_path, exclusive=True):
         _atomic_write_json(index_path, index)
 
-    print(f"Indexed {N} chunks, {len(inverted)} unique terms \u2192 {INDEX_FILE}")
+    if not quiet:
+        print(f"Indexed {N} chunks, {len(inverted)} unique terms \u2192 {INDEX_FILE}")
 
     # On first run, generate root summary if empty
     root_summary_path = os.path.join(base_dir, KNOWLEDGE_DIR, "_summary.md")
@@ -948,7 +955,7 @@ def load_index(base_dir=None):
         return json.load(f)
 
 
-def search(query, index, top_k=None, scope=None, verbose=False):
+def search(query, index, top_k=None, scope=None, verbose=False, score_threshold=0.0):
     """Run modified BM25 search."""
     tokens = tokenize(query)
     if not tokens:
@@ -998,6 +1005,9 @@ def search(query, index, top_k=None, scope=None, verbose=False):
         scores[chunk_id] *= w
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    if score_threshold > 0 and ranked:
+        cutoff = ranked[0][1] * score_threshold
+        ranked = [(cid, s) for cid, s in ranked if s >= cutoff]
     if top_k is not None:
         ranked = ranked[:top_k]
 
@@ -1496,7 +1506,11 @@ def _load_context(query, base_dir=None, top_k=None, scope=None, mode=None, sessi
     _auto_capture(query, "query", base_dir)
 
     index = load_index(base_dir)
-    results = search(query, index, top_k=top_k, scope=scope)
+    cfg_search = config.get("search", {})
+    effective_top_k = top_k or cfg_search.get("top_k", DEFAULT_TOP_K)
+    score_threshold = cfg_search.get("score_threshold", DEFAULT_SCORE_THRESHOLD)
+    results = search(query, index, top_k=effective_top_k, scope=scope,
+                     score_threshold=score_threshold)
 
     # --- Web mode: compact context for browser extension ---
     if mode == "web":
@@ -1791,13 +1805,10 @@ def _add_chunk(chunk_id, summary, body="", domain="", tags="",
         _set_pending_external(base_dir, session_id)
 
     # Rebuild index silently
-    old_stdout = sys.stdout
-    sys.stdout = io.StringIO()
     try:
-        build_index(base_dir)
+        build_index(base_dir, quiet=True)
     except EasybaseError:
         pass
-    sys.stdout = old_stdout
 
     # Return compact summary for the user
     index = load_index(base_dir)
@@ -1906,10 +1917,9 @@ def _rebuild_index(base_dir=None):
     sys.stdout = io.StringIO()
     try:
         build_index(base_dir)
-    except EasybaseError:
-        pass
-    output = sys.stdout.getvalue()
-    sys.stdout = old_stdout
+    finally:
+        output = sys.stdout.getvalue()
+        sys.stdout = old_stdout
     return output.strip()
 
 
