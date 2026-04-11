@@ -166,22 +166,31 @@
 
   // --- Status Indicator (minimal, unobtrusive) ---
 
-  const indicator = document.createElement("div");
-  indicator.id = "easybase-indicator";
-  indicator.textContent = "EB";
-  indicator.title = "Easybase active";
-  document.body.appendChild(indicator);
+  function ensureIndicator() {
+    let el = document.getElementById("easybase-indicator");
+    if (el) return el;
+    el = document.createElement("div");
+    el.id = "easybase-indicator";
+    el.textContent = "EB";
+    el.title = "Easybase active";
+    document.body.appendChild(el);
+    return el;
+  }
+
+  ensureIndicator();
 
   function showLoading() {
-    indicator.textContent = "EB \u231B";
-    indicator.title = "Loading Easybase context...";
-    indicator.classList.add("eb-loading");
+    const el = ensureIndicator();
+    el.textContent = "EB \u231B";
+    el.title = "Loading Easybase context...";
+    el.classList.add("eb-loading");
   }
 
   function hideLoading() {
-    indicator.textContent = "EB";
-    indicator.title = "Easybase active";
-    indicator.classList.remove("eb-loading");
+    const el = ensureIndicator();
+    el.textContent = "EB";
+    el.title = "Easybase active";
+    el.classList.remove("eb-loading");
   }
 
   // --- Send Interception ---
@@ -339,6 +348,7 @@
   // --- MutationObserver: watch for chat changes ---
 
   const observer = new MutationObserver(() => {
+    ensureIndicator();
     checkForNewUserMessage();
     clearTimeout(captureTimer);
     captureTimer = setTimeout(tryCapture, 2000);
